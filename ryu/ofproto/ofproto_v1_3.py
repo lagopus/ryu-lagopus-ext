@@ -1250,7 +1250,7 @@ oxm_types = [
     oxm_fields.OpenFlowBasic('gre_key', 46, type_desc.Int4),
     oxm_fields.OpenFlowBasic('gre_seqnum', 47, type_desc.Int4),
     oxm_fields.OpenFlowBasic('vxlan_flags', 51, type_desc.Int1),
-    oxm_fields.OpenFlowBasic('vxlan_vni', 52, type_desc.Int4)
+    oxm_fields.OpenFlowBasic('vxlan_vni', 52, type_desc.Int3)
 ] + nx_match.oxm_types
 
 oxm_fields.generate(__name__)
