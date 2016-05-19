@@ -88,3 +88,4 @@ ethernet.register_packet_type(mpls.mpls, ether.ETH_TYPE_MPLS)
 
 # Tunnels.
 gre.gre.register_packet_type(ethernet, 0x6558)
+mpls.mpls.register_packet_type(ethernet, 0)

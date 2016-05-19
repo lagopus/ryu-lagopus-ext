@@ -62,7 +62,7 @@ class mpls(packet_base.PacketBase):
         msg = cls(label, exp, bsb, ttl)
         if bsb:
             if len(buf) > offset and buf[offset] != 0x45:
-                return msg, ethernet, buf[msg._MIN_LEN:]
+                return msg, mpls.get_packet_type(0), buf[msg._MIN_LEN:]
             else:
                 return msg, ipv4.ipv4, buf[msg._MIN_LEN:]
         else:
