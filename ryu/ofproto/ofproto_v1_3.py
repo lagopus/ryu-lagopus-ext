@@ -253,6 +253,8 @@ OFPAT_DEC_NW_TTL = 24           # Decrement IP TTL.
 OFPAT_SET_FIELD = 25            # Set a header field using OXM TLV format.
 OFPAT_PUSH_PBB = 26             # Push a new PBB service tag (I-TAG)
 OFPAT_POP_PBB = 27              # Pop the outer PBB service tag (I-TAG)
+OFPAT_ENCAP = 28
+OFPAT_DECAP = 29
 OFPAT_EXPERIMENTER = 0xffff
 
 # struct ofp_action_header
@@ -307,11 +309,31 @@ OFP_ACTION_SET_FIELD_PACK_STR = '!HH4x'
 OFP_ACTION_SET_FIELD_SIZE = 8
 assert calcsize(OFP_ACTION_SET_FIELD_PACK_STR) == OFP_ACTION_SET_FIELD_SIZE
 
+# struct ofp_action_encap
+OFP_ACTION_ENCAP_PACK_STR = '!HHI'
+OFP_ACTION_ENCAP_SIZE = 8
+assert calcsize(OFP_ACTION_ENCAP_PACK_STR) == OFP_ACTION_ENCAP_SIZE
+
+# struct ofp_action_decap
+OFP_ACTION_DECAP_PACK_STR = '!HHII4x'
+OFP_ACTION_DECAP_SIZE = 16
+assert calcsize(OFP_ACTION_DECAP_PACK_STR) == OFP_ACTION_DECAP_SIZE
+
 # struct ofp_action_experimenter_header
 OFP_ACTION_EXPERIMENTER_HEADER_PACK_STR = '!HHI'
 OFP_ACTION_EXPERIMENTER_HEADER_SIZE = 8
 assert (calcsize(OFP_ACTION_EXPERIMENTER_HEADER_PACK_STR) ==
         OFP_ACTION_EXPERIMENTER_HEADER_SIZE)
+
+# struct ofp_ed_prop_header
+OFP_ED_PROP_HEADER_PACK_STR = '!HH'
+OFP_ED_PROP_HEADER_SIZE = 4
+assert calcsize(OFP_ED_PROP_HEADER_PACK_STR) == OFP_ED_PROP_HEADER_SIZE
+
+# struct ofp_ed_prop_portname
+OFP_ED_PROP_PORTNAME_PACK_STR = '!HHH2x' + str(OFP_MAX_PORT_NAME_LEN) + 's'
+OFP_ED_PROP_PORTNAME_SIZE = 24
+assert calcsize(OFP_ED_PROP_PORTNAME_PACK_STR) == OFP_ED_PROP_PORTNAME_SIZE
 
 # ofp_switch_features
 OFP_SWITCH_FEATURES_PACK_STR = '!QIBB2xII'
@@ -784,6 +806,32 @@ OFPPR_ADD = 0       # The port was added.
 OFPPR_DELETE = 1    # The port was removed.
 OFPPR_MODIFY = 2    # Some attribute of the port has changed.
 
+# enum ofp_header_type_namespaces
+OFPHTN_ONF = 0
+OFPHTN_ETHERTYPE = 1
+OFPHTN_IP_PROTO = 2
+OFPHTN_UDP_TCP_PORT = 3
+OFPHTN_IPV4_OPTION = 4
+OFPHTN_MPLS_CHANNEL = 5
+
+# enum ofp_header_type_onf
+OFPHTO_ETHERNET = 0
+OFPHTO_NO_HEADER = 1
+OFPHTO_MPLS_ACH = 2
+OFPHTO_MPLS_PWCW = 3
+OFPHTO_HDLC = 4
+OFPHTO_USE_NEXT_PROTO = 0xFFFE
+OFPHTO_OXM_EXPERIMENTER = 0xFFFF
+
+# enum ofp_ed_prop_type
+OFPPPT_PROP_NONE = 0
+OFPPPT_PROP_PORT_NAME = 1
+OFPPPT_PROP_EXPERIMENTER = 0xFFFF
+
+# enum ofp_ed_prop_port_flags
+OFPPPT_PROP_PORT_FLAGS_CREATE = 1 << 0
+OFPPPT_PROP_PORT_FLAGS_SET_INPORT = 1 << 1
+
 # OFPMP_EXPERIMENTER
 # struct onf_experimenter_multipart_msg
 # (experimenter == ONF_EXPERIMENTER_ID)
@@ -1194,7 +1242,13 @@ oxm_types = [
     oxm_fields.ONFExperimenter('tcp_flags', 42, type_desc.Int2),
     # EXT-233 Output match Extension
     # NOTE(yamamoto): The spec says uint64_t but I assume it's an error.
-    oxm_fields.ONFExperimenter('actset_output', 43, type_desc.Int4),
+    # oxm_fields.ONFExperimenter('actset_output', 43, type_desc.Int4),
+    # EXT-382 General tunnel encap/decap extension
+    oxm_fields.OpenFlowBasic('gre_flags', 43, type_desc.Int2),
+    oxm_fields.OpenFlowBasic('gre_ver', 44, type_desc.Int1),
+    oxm_fields.OpenFlowBasic('gre_protocol', 45, type_desc.Int2),
+    oxm_fields.OpenFlowBasic('gre_key', 46, type_desc.Int4),
+    oxm_fields.OpenFlowBasic('gre_seqnum', 47, type_desc.Int4),
 ] + nx_match.oxm_types
 
 oxm_fields.generate(__name__)
