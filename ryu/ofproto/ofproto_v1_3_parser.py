@@ -17,6 +17,10 @@
 """
 This module implements OpenFlow 1.3.x.
 
+This module also implements the following extensions.
+
+    - EXT-382
+
 This module also implements some of extensions shown in
 "OpenFlow Extensions for 1.3.X Pack 1".
 Namely, the following extensions are implemented.
@@ -32,6 +36,8 @@ The following extensions are partially implemented.
     - EXT-187 Flow entry notifications Extension (ONFMP_FLOW_MONITOR only)
     - EXT-230 Bundle Extension (Error codes only)
     - EXT-232 Table synchronisation Extension (Error codes only)
+    - EXT-232 Table synchronisation Extension (Error codes only)
+    - EXT-382 General tunnel encap/decap
 
 The following extensions are not implemented yet.
 
@@ -644,6 +650,11 @@ class Flow(object):
         self.pbb_isid = 0
         self.tunnel_id = 0
         self.ipv6_exthdr = 0
+        self.gre_flags = 0
+        self.gre_ver = 0
+        self.gre_protocol = 0
+        self.gre_key = 0
+        self.gre_seqnum = 0
 
 
 class FlowWildcards(object):
@@ -664,6 +675,7 @@ class FlowWildcards(object):
         self.pbb_isid_mask = 0
         self.tunnel_id_mask = 0
         self.ipv6_exthdr_mask = 0
+        self.gre_key_mask = 0
         self.wildcards = (1 << 64) - 1
 
     def ft_set(self, shift):
@@ -734,6 +746,11 @@ class OFPMatch(StringifyMixin):
                                      (EXT-109 ONF Extension)
     actset_output    Integer 32bit   Output port from action set metadata
                                      (EXT-233 ONF Extension)
+    gre_flags        Integer 16bit
+    gre_ver          Integer 8bit
+    gre_protocol     Integer 16bit
+    gre_key          Integer 32bit
+    gre_seqnum       Integer 32bit
     ================ =============== ==================================
 
     Example::
@@ -980,6 +997,11 @@ class OFPMatch(StringifyMixin):
         OXM_OF_PBB_ISID        PBB I-SID
         OXM_OF_TUNNEL_ID       Logical Port Metadata
         OXM_OF_IPV6_EXTHDR     IPv6 Extension Header pseudo-field
+        OXM_OF_GRE_FLAGS
+        OXM_OF_GRE_VER
+        OXM_OF_GRE_PROTOCOL
+        OXM_OF_GRE_KEY
+        OXM_OF_GRE_SEQNUM
         ====================== ===================================
         """
         self.fields.append(OFPMatchField.make(header, value, mask))
@@ -1236,6 +1258,46 @@ class OFPMatch(StringifyMixin):
                 header = ofproto.OXM_OF_IPV6_EXTHDR
             self.append_field(header, self._flow.ipv6_exthdr,
                               self._wc.ipv6_exthdr_mask)
+
+        if self._wc.ft_test(ofproto.OFPXMT_OFB_GRE_FLAGS):
+            if self._wc.gre_flags_mask:
+                header = ofproto.OXM_OF_GRE_FLAGS_W
+            else:
+                header = ofproto.OXM_OF_GRE_FLAGS
+            self.append_field(header, self._flow.gre_flags,
+                              self._wc.gre_flags_mask)
+
+        if self._wc.ft_test(ofproto.OFPXMT_OFB_GRE_VER):
+            if self._wc.gre_ver_mask:
+                header = ofproto.OXM_OF_GRE_VER_W
+            else:
+                header = ofproto.OXM_OF_GRE_VER
+            self.append_field(header, self._flow.gre_ver,
+                              self._wc.gre_ver_mask)
+
+        if self._wc.ft_test(ofproto.OFPXMT_OFB_GRE_PROTOCOL):
+            if self._wc.gre_protocol_mask:
+                header = ofproto.OXM_OF_GRE_PROTOCOL_W
+            else:
+                header = ofproto.OXM_OF_GRE_PROTOCOL
+            self.append_field(header, self._flow.gre_protocol,
+                              self._wc.gre_protocol_mask)
+
+        if self._wc.ft_test(ofproto.OFPXMT_OFB_GRE_KEY):
+            if self._wc.gre_key_mask:
+                header = ofproto.OXM_OF_GRE_KEY_W
+            else:
+                header = ofproto.OXM_OF_GRE_KEY
+            self.append_field(header, self._flow.gre_key,
+                              self._wc.gre_key_mask)
+
+        if self._wc.ft_test(ofproto.OFPXMT_OFB_GRE_SEQNUM):
+            if self._wc.gre_seqnum_mask:
+                header = ofproto.OXM_OF_GRE_SEQNUM_W
+            else:
+                header = ofproto.OXM_OF_GRE_SEQNUM
+            self.append_field(header, self._flow.gre_seqnum,
+                              self._wc.gre_seqnum_mask)
 
         field_offset = offset + 4
         for f in self.fields:
@@ -1526,6 +1588,31 @@ class OFPMatch(StringifyMixin):
         self._wc.ft_set(ofproto.OFPXMT_OFB_IPV6_EXTHDR)
         self._wc.ipv6_exthdr_mask = mask
         self._flow.ipv6_exthdr = hdr
+
+    def set_gre_flags(self, flags):
+        self._wc.ft_set(ofproto.OFPXMT_OFB_GRE_FLAGS)
+        self._flow.gre_flags = flags
+
+    def set_gre_ver(self, ver):
+        self._wc.ft_set(ofproto.OFPXMT_OFB_GRE_VER)
+        self._flow.gre_ver = ver
+
+    def set_gre_protocol(self, protocol):
+        self._wc.ft_set(ofproto.OFPXMT_OFB_GRE_PROTOCOL)
+        self._flow.gre_protocol = protocol
+
+    def set_gre_key(self, key):
+        self._wc.ft_set(ofproto.OFPXMT_OFB_GRE_KEY)
+        self._flow.gre_key = key
+
+    def set_gre_key_masked(self, key, mask):
+        self._wc.ft_set(ofproto.OFPXMT_OFB_GRE_KEY)
+        self._wc.gre_key_mask = mask
+        self._flow.gre_key = key & mask
+
+    def set_gre_seqnum(self, seq):
+        self._wc.ft_set(ofproto.OFPXMT_OFB_GRE_SEQNUM)
+        self._flow.gre_key = seq
 
 
 class OFPPropUnknown(StringifyMixin):
@@ -2194,6 +2281,61 @@ class MTIPv6ExtHdr(OFPMatchField):
 
     def __init__(self, header, value, mask=None):
         super(MTIPv6ExtHdr, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GRE_FLAGS,
+                                      ofproto.OXM_OF_GRE_FLAGS_W])
+class MTGreFlags(OFPMatchField):
+    pack_str = '!H'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGreFlags, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GRE_VER,
+                                      ofproto.OXM_OF_GRE_VER_W])
+class MTGreVer(OFPMatchField):
+    pack_str = '!B'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGreVer, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GRE_PROTOCOL,
+                                      ofproto.OXM_OF_GRE_PROTOCOL_W])
+class MTGreProtocol(OFPMatchField):
+    pack_str = '!H'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGreProtocol, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GRE_KEY,
+                                      ofproto.OXM_OF_GRE_KEY_W])
+class MTGreKey(OFPMatchField):
+    pack_str = '!I'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGreKey, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GRE_SEQNUM,
+                                      ofproto.OXM_OF_GRE_SEQNUM_W])
+class MTGreSeqNum(OFPMatchField):
+    pack_str = '!I'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGreSeqNum, self).__init__(header)
         self.value = value
         self.mask = mask
 
@@ -3366,6 +3508,178 @@ class OFPActionPopPbb(OFPAction):
         (type_, len_) = struct.unpack_from(
             ofproto.OFP_ACTION_HEADER_PACK_STR, buf, offset)
         return cls()
+
+
+class OFPEdPropHeader(StringifyMixin):
+    def __init__(self, type_, len_):
+        self.type = type_
+        self.len = len_
+
+    def serialize(self, buf, offset):
+        msg_pack_into(ofproto.OFP_ED_PROP_HEADER_PACK_STR,
+                      buf, offset, self.type, self.len)
+
+
+class OFPEdProp(OFPEdPropHeader):
+    _ED_PROP_TYPES = {}
+
+    @staticmethod
+    def register_ed_prop_type(type_, len_):
+        def _register_ed_prop_type(cls):
+            cls.cls_ed_prop_type = type_
+            cls.cls_ed_prop_len = len_
+            OFPEdProp._ED_PROP_TYPES[cls.cls_ed_prop_type] = cls
+            return cls
+        return _register_ed_prop_type
+
+    def __init__(self):
+        cls = self.__class__
+        super(OFPEdProp, self).__init__(cls.cls_ed_prop_type,
+                                        cls.cls_ed_prop_len)
+
+    @classmethod
+    def parser(cls, buf, offset):
+        (type_, len_) = struct.unpack_from(
+            ofproto.OFP_ED_PROP_HEADER_PACK_STR, buf, offset)
+        cls_ = cls._ED_PROP_TYPES.get(type_)
+        assert cls_ is not None
+        return cls_.parser(buf, offset)
+
+
+@OFPEdProp.register_ed_prop_type(ofproto.OFPPPT_PROP_PORT_NAME,
+                                 ofproto.OFP_ED_PROP_PORTNAME_SIZE)
+class OFPEdPropPortname(OFPEdProp):
+    """
+    Portname property
+
+    This property associate a logical port with a tunnel.
+
+    ================ ======================================================
+    Attribute        Description
+    ================ ======================================================
+    packet_type
+    props
+    ================ ======================================================
+    """
+    def __init__(self, port_flags, name, type_=None, len_=None):
+        super(OFPEdPropPortname, self).__init__()
+        self.port_flags = port_flags
+        self.name = name
+
+    @classmethod
+    def parser(cls, buf, offset):
+        (type_, len_, port_flags, name) = struct.unpack_from(
+            ofproto.OFP_ED_PROP_PORTNAME_PACK_STR, buf, offset)
+        return cls(port_flags, name)
+
+    def serialize(self, buf, offset):
+        msg_pack_into(ofproto.OFP_ED_PROP_PORTNAME_PACK_STR, buf,
+                      offset, self.type, self.len,
+                      self.port_flags, self.name)
+
+
+@OFPAction.register_action_type(ofproto.OFPAT_ENCAP,
+                                ofproto.OFP_ACTION_ENCAP_SIZE)
+class OFPActionEncap(OFPAction):
+    """
+    Encap action
+
+    This action encapsulation a new outmost header to the packet.
+
+    ================ ======================================================
+    Attribute        Description
+    ================ ======================================================
+    packet_type
+    props
+    ================ ======================================================
+    """
+    def __init__(self, packet_type, props=[], type_=None, len_=None):
+        super(OFPActionEncap, self).__init__()
+        self.packet_type = packet_type
+        for p in props:
+            assert isinstance(p, OFPEdProp)
+        self.props = props
+
+    @classmethod
+    def parser(cls, buf, offset):
+        (type_, len_, packet_type) = struct.unpack_from(
+            ofproto.OFP_ACTION_ENCAP_PACK_STR, buf, offset)
+
+        offset += ofproto.OFP_ACTION_ENCAP_SIZE
+        props = []
+        props_len = len_ - ofproto.OFP_ACTION_ENCAP_SIZE
+        while props_len > 0:
+            p = OFPEdProp.parser(buf, offset)
+            props.append(p)
+            props_len -= p.len
+            offset += p.len
+
+        encap = cls(packet_type, props)
+        encap.len = len_
+        return encap
+
+    def serialize(self, buf, offset):
+        ed_prop_offset = offset + ofproto.OFP_ACTION_ENCAP_SIZE
+        if self.props:
+            for p in self.props:
+                p.serialize(buf, ed_prop_offset)
+                ed_prop_offset += p.len
+        self.len = ed_prop_offset - offset
+
+        msg_pack_into(ofproto.OFP_ACTION_ENCAP_PACK_STR, buf, offset,
+                      self.type, self.len, self.packet_type)
+
+
+@OFPAction.register_action_type(ofproto.OFPAT_DECAP,
+                                ofproto.OFP_ACTION_DECAP_SIZE)
+class OFPActionDecap(OFPAction):
+    """
+    Decap action
+
+    This action decapsulation the outmost header from the packet.
+
+    ================ ======================================================
+    Attribute        Description
+    ================ ======================================================
+    cur_pkt_type
+    new_pkt_type
+    props
+    ================ ======================================================
+    """
+    def __init__(self, cur_pkt_type, new_pkt_type, props=[], type_=None, len_=None):
+        super(OFPActionDecap, self).__init__()
+        self.cur_pkt_type = cur_pkt_type
+        self.new_pkt_type = new_pkt_type
+        for p in props:
+            assert isinstance(p, OFPEdProp)
+        self.props = props
+
+    @classmethod
+    def parser(cls, buf, offset):
+        (type_, len_, cur_pkt_type, new_pkt_type) = struct.unpack_from(
+            ofproto.OFP_ACTION_DECAP_PACK_STR, buf, offset)
+        offset += ofproto.OFP_ACTION_DECAP_SIZE
+        props = []
+        props_len = len_ - ofproto.OFP_ACTION_DECAP_SIZE
+        while props_len > 0:
+            p = OFPEdProp.parser(buf, offset)
+            props.append(p)
+            props_len -= p.len
+            offset += p.len
+
+        decap = cls(cur_pkt_type, new_pkt_type, props)
+        decap.len = len_
+        return decap
+
+    def serialize(self, buf, offset):
+        ed_prop_offset = offset + ofproto.OFP_ACTION_DECAP_SIZE
+        if self.props:
+            for p in self.props:
+                p.serialize(buf, ed_prop_offset)
+                ed_prop_offset += p.len
+        self.len = ed_prop_offset - offset
+        msg_pack_into(ofproto.OFP_ACTION_DECAP_PACK_STR, buf, offset,
+                      self.type, self.len, self.cur_pkt_type, self.new_pkt_type)
 
 
 @OFPAction.register_action_type(
