@@ -54,13 +54,17 @@ class mpls(packet_base.PacketBase):
     @classmethod
     def parser(cls, buf):
         (label,) = struct.unpack_from(cls._PACK_STR, buf)
+        offset = cls._MIN_LEN
         ttl = label & 0xff
         bsb = (label >> 8) & 1
         exp = (label >> 9) & 7
         label = label >> 12
         msg = cls(label, exp, bsb, ttl)
         if bsb:
-            return msg, ipv4.ipv4, buf[msg._MIN_LEN:]
+            if len(buf) > offset and buf[offset] != 0x45:
+                return msg, ethernet, buf[msg._MIN_LEN:]
+            else:
+                return msg, ipv4.ipv4, buf[msg._MIN_LEN:]
         else:
             return msg, mpls, buf[msg._MIN_LEN:]
 
