@@ -97,7 +97,7 @@
 				    {
 					"OFPActionDecap":{
 					    "cur_pkt_type":100423,
-					    "new_pkt_type":100423,
+					    "new_pkt_type":100423
 					}
 				    },
 				    {

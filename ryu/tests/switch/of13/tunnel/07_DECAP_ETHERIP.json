@@ -31,12 +31,12 @@
 				    {
 					"OFPActionDecap":{
 					    "cur_pkt_type":0,
-					    "new_pkt_type":131119
+					    "new_pkt_type":67584
 					}
 				    },
 				    {
 					"OFPActionDecap":{
-					    "cur_pkt_type":131119,
+					    "cur_pkt_type":67584,
 					    "new_pkt_type":0
 					}
 				    },
