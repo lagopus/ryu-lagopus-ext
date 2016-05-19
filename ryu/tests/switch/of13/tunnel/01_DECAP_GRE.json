@@ -13,7 +13,9 @@
 				    "OXMTlv":{
 					"field":"eth_type",
 					"value":2048
-				    },
+				    }
+				},
+				{
 				    "OXMTlv":{
 					"field":"ip_proto",
 					"value":47
