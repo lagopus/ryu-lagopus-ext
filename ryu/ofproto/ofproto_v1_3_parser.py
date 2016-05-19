@@ -2384,6 +2384,7 @@ class MTVxlanVni(OFPMatchField):
                       (value >> 0) & 0xff)
         self.length += self.n_bytes
 
+
 @OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_FLAGS,
                                       ofproto.OXM_OF_GTPU_FLAGS_W])
 class MTGtpuFlags(OFPMatchField):
@@ -2393,6 +2394,7 @@ class MTGtpuFlags(OFPMatchField):
         super(MTGtpuFlags, self).__init__(header)
         self.value = value
         self.mask = mask
+
 
 @OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_VER,
                                       ofproto.OXM_OF_GTPU_VER_W])
@@ -2404,6 +2406,7 @@ class MTGtpuVer(OFPMatchField):
         self.value = value
         self.mask = mask
 
+
 @OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_MSGTYPE,
                                       ofproto.OXM_OF_GTPU_MSGTYPE_W])
 class MTGtpuMsgtype(OFPMatchField):
@@ -2414,6 +2417,7 @@ class MTGtpuMsgtype(OFPMatchField):
         self.value = value
         self.mask = mask
 
+
 @OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_TEID,
                                       ofproto.OXM_OF_GTPU_TEID_W])
 class MTGtpuTeid(OFPMatchField):
@@ -2423,6 +2427,7 @@ class MTGtpuTeid(OFPMatchField):
         super(MTGtpuTeid, self).__init__(header)
         self.value = value
         self.mask = mask
+
 
 @_register_parser
 @_set_msg_type(ofproto.OFPT_PACKET_IN)
