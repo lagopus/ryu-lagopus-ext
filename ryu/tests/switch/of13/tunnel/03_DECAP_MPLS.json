@@ -25,12 +25,12 @@
 				    {
 					"OFPActionDecap":{
 					    "cur_pkt_type":0,
-					    "new_pkt_type":131119
+					    "new_pkt_type":100423
 					}
 				    },
 				    {
 					"OFPActionDecap":{
-					    "cur_pkt_type":131119,
+					    "cur_pkt_type":100423,
 					    "new_pkt_type":0
 					}
 				    },
@@ -50,7 +50,7 @@
 	"tests":[
 	    {
 		"ingress":[
-		    "ethernet(dst='22:33:33:33:33:33', src='12:22:22:22:22:22', ethertype=0x0800)",
+		    "ethernet(dst='22:33:33:33:33:33', src='12:22:22:22:22:22', ethertype=0x8847)",
 		    "mpls(label=1, ttl=64, bsb=1)",
 		    "ethernet(dst='22:22:22:22:22:22', src='12:11:11:11:11:11', ethertype=0x0800)",
 		    "ipv4(proto=6, src='1.1.1.1', dst='2.2.2.2')",
