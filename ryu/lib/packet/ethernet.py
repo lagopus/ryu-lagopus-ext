@@ -19,6 +19,9 @@ from . import vlan
 from . import mpls
 from . import gre
 from . import vxlan
+from . import gtpu
+from . import ipv4
+from . import ipv6
 from . import ether_types as ether
 from ryu.lib import addrconv
 
@@ -91,3 +94,5 @@ ethernet.register_packet_type(mpls.mpls, ether.ETH_TYPE_MPLS)
 gre.gre.register_packet_type(ethernet, 0x6558)
 mpls.mpls.register_packet_type(ethernet, 0)
 vxlan.vxlan.register_packet_type(ethernet, 0)
+gtpu.gtpu.register_packet_type(ipv4.ipv4, 4)
+gtpu.gtpu.register_packet_type(ipv6.ipv6, 6)

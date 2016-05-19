@@ -19,6 +19,7 @@ from . import packet_base
 from . import packet_utils
 from . import dhcp
 from . import vxlan
+from . import gtpu
 
 
 class udp(packet_base.PacketBase):
@@ -56,6 +57,8 @@ class udp(packet_base.PacketBase):
             return dhcp.dhcp
         if dst_port == 4789 or src_port == 4789:
             return vxlan.vxlan
+        if dst_port == 2152 or src_port == 2152:
+            return gtpu.gtpu
         return None
 
     @classmethod

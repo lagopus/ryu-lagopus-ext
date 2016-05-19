@@ -48,6 +48,7 @@ class Packet(object):
     def _parser(self, cls):
         rest_data = self.data
         while cls:
+            print cls
             try:
                 proto, cls, rest_data = cls.parser(rest_data)
             except struct.error:
