@@ -38,6 +38,7 @@ The following extensions are partially implemented.
     - EXT-232 Table synchronisation Extension (Error codes only)
     - EXT-232 Table synchronisation Extension (Error codes only)
     - EXT-382 General tunnel encap/decap
+    - EXT-565 GTP tunneling as part of Generic tunnel encap / decap
 
 The following extensions are not implemented yet.
 
@@ -2383,6 +2384,45 @@ class MTVxlanVni(OFPMatchField):
                       (value >> 0) & 0xff)
         self.length += self.n_bytes
 
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_FLAGS,
+                                      ofproto.OXM_OF_GTPU_FLAGS_W])
+class MTGtpuFlags(OFPMatchField):
+    pack_str = '!B'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGtpuFlags, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_VER,
+                                      ofproto.OXM_OF_GTPU_VER_W])
+class MTGtpuVer(OFPMatchField):
+    pack_str = '!B'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGtpuVer, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_MSGTYPE,
+                                      ofproto.OXM_OF_GTPU_MSGTYPE_W])
+class MTGtpuMsgtype(OFPMatchField):
+    pack_str = '!B'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGtpuMsgtype, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_GTPU_TEID,
+                                      ofproto.OXM_OF_GTPU_TEID_W])
+class MTGtpuTeid(OFPMatchField):
+    pack_str = '!I'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGtpuTeid, self).__init__(header)
+        self.value = value
+        self.mask = mask
 
 @_register_parser
 @_set_msg_type(ofproto.OFPT_PACKET_IN)
