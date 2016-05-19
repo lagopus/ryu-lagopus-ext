@@ -18,6 +18,7 @@ from . import packet_base
 from . import vlan
 from . import mpls
 from . import gre
+from . import vxlan
 from . import ether_types as ether
 from ryu.lib import addrconv
 
@@ -89,3 +90,4 @@ ethernet.register_packet_type(mpls.mpls, ether.ETH_TYPE_MPLS)
 # Tunnels.
 gre.gre.register_packet_type(ethernet, 0x6558)
 mpls.mpls.register_packet_type(ethernet, 0)
+vxlan.vxlan.register_packet_type(ethernet, 0)

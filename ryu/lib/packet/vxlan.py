@@ -9,7 +9,7 @@ class vxlan(packet_base.PacketBase):
     _PACK_STR = '!BxxxI'
     _MIN_LEN = struct.calcsize(_PACK_STR)
 
-    def __init__(self, flags=0, vni=0):
+    def __init__(self, flags=0x8, vni=0):
         super(vxlan, self).__init__()
         self.flags = flags
         self.vni = vni
@@ -19,8 +19,7 @@ class vxlan(packet_base.PacketBase):
         (flags, vni) = struct.unpack_from(cls._PACK_STR, buf)
         vni = vni >> 8
         msg = cls(flags, vni)
-        return msg, ethernet, buf[msg._MIN_LEN:]
+        return msg, vxlan.get_packet_type(0), buf[msg._MIN_LEN:]
 
     def serialize(self, payload, prev):
-        val = self.vni << 8
-        return struct.pack(vxlan._PACK_STR, self.flags, val)
+        return struct.pack(vxlan._PACK_STR, self.flags, self.vni << 8)
