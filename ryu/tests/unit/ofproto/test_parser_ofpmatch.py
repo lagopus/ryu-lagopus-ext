@@ -191,7 +191,7 @@ def _add_tests():
         ('pbb_uca', Int1),
         # ONF Experimenter --> OpenFlow Basic (OF1.5+)
         ('tcp_flags', Int2),
-        ('actset_output', Int4),
+        # ('actset_output', Int4),
         # Nicira Experimenter
         ('eth_dst_nxm', Mac),
         ('eth_src_nxm', Mac),
