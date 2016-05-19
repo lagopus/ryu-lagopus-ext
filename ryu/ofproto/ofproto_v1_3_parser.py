@@ -2340,6 +2340,28 @@ class MTGreSeqNum(OFPMatchField):
         self.mask = mask
 
 
+@OFPMatchField.register_field_header([ofproto.OXM_OF_VXLAN_FLAGS,
+                                      ofproto.OXM_OF_VXLAN_FLAGS_W])
+class MTVxlanFlags(OFPMatchField):
+    pack_str = '!B'
+
+    def __init__(self, header, value, mask=None):
+        super(MTVxlanFlags, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+
+@OFPMatchField.register_field_header([ofproto.OXM_OF_VXLAN_VNI,
+                                      ofproto.OXM_OF_VXLAN_VNI_W])
+class MTGreVer(OFPMatchField):
+    pack_str = '!I'
+
+    def __init__(self, header, value, mask=None):
+        super(MTGreVer, self).__init__(header)
+        self.value = value
+        self.mask = mask
+
+
 @_register_parser
 @_set_msg_type(ofproto.OFPT_PACKET_IN)
 class OFPPacketIn(MsgBase):
