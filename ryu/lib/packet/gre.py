@@ -25,7 +25,7 @@ class gre(packet_base.PacketBase):
     _PACK_STR = '!HHI'
     _MIN_LEN = struct.calcsize(_PACK_STR)
 
-    def __init__(self, flags=0, protocol=0, key=0):
+    def __init__(self, flags=0x2000, protocol=0, key=0):
         super(gre, self).__init__()
         self.flags = flags
         self.protocol = protocol
@@ -44,4 +44,4 @@ class gre(packet_base.PacketBase):
 
     @classmethod
     def get_packet_type(self, protocol):
-        return cls._TYPES.get(protocol)
+        return gre._TYPES.get(protocol)
