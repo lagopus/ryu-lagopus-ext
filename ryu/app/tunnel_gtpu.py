@@ -4,11 +4,11 @@ from ryu.controller.handler import CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 
-class TunnelVXLAN(app_manager.RyuApp):
+class TunnelGTPU(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
-        super(TunnelVXLAN, self).__init__(*args, **kwargs)
+        super(TunnelGTPU, self).__init__(*args, **kwargs)
         # initialize mac address table.
 
 
@@ -21,24 +21,39 @@ class TunnelVXLAN(app_manager.RyuApp):
         type_eth  = (ofproto.OFPHTN_ONF << 16) | ofproto.OFPHTO_ETHERNET
         type_ip   = (ofproto.OFPHTN_ETHERTYPE << 16) | 0x0800
         type_udp   = (ofproto.OFPHTN_IP_PROTO << 16) | 17
-        type_vxl  = (ofproto.OFPHTN_UDP_TCP_PORT << 16) | 4789
+        type_gtpu  = (ofproto.OFPHTN_UDP_TCP_PORT << 16) | 2152
         type_next = (ofproto.OFPHTN_ONF << 16) | ofproto.OFPHTO_USE_NEXT_PROTO
+
+        print "type_eth ",  type_eth
+        print "type_ip ",   type_ip
+        print "type_udp ",  type_udp
+        print "type_gtpu ",  type_gtpu
+        print "type_next ", type_next
 
         # install the table-miss flow entry.
 
         # Encap Flow
         match = parser.OFPMatch(in_port=1)
         actions = [
-                   # encap VXLAN
-                   parser.OFPActionEncap(type_vxl),
-                   parser.OFPActionSetField(vxlan_vni=1),
+                   # decap ether
+                   parser.OFPActionDecap(type_eth, type_ip),
+                   # encap gtpu
+                   parser.OFPActionEncap(type_gtpu),
+                   # set gtpu teid_field
+                   parser.OFPActionSetField(gtpu_teid=1),
+                   # encap udp
                    parser.OFPActionEncap(type_udp),
+                   # set udp field
                    parser.OFPActionSetField(udp_src=5432),
-                   parser.OFPActionSetField(udp_dst=4789),
+                   parser.OFPActionSetField(udp_dst=2152),
+                   # encap ip
                    parser.OFPActionEncap(type_ip),
+                   # set ip field
                    parser.OFPActionSetField(ipv4_src='10.0.0.1'),
                    parser.OFPActionSetField(ipv4_dst='10.0.0.2'),
+                   # encap ether
                    parser.OFPActionEncap(type_eth),
+                   # set ether field
                    parser.OFPActionSetField(eth_src='aa:aa:aa:aa:aa:aa'),
                    parser.OFPActionSetField(eth_dst='bb:bb:bb:bb:bb:bb'),
                    # output
@@ -49,11 +64,19 @@ class TunnelVXLAN(app_manager.RyuApp):
         # Decap Flow
         match = parser.OFPMatch(in_port=2)
         actions = [
-                   # decap VXLAN
+                   # decap ether-ip
                    parser.OFPActionDecap(type_eth, type_ip),
+                   # decap ip-udp
                    parser.OFPActionDecap(type_ip, type_udp),
-                   parser.OFPActionDecap(type_udp, type_vxl),
-                   parser.OFPActionDecap(type_vxl, type_next),
+                   # decap udp-gtpu
+                   parser.OFPActionDecap(type_udp, type_gtpu),
+                   # decap gtpu-ip
+                   parser.OFPActionDecap(type_gtpu, type_ip),
+                   # encap ether
+                   parser.OFPActionEncap(type_eth),
+                   # set ether field
+                   parser.OFPActionSetField(eth_src='cc:cc:cc:cc:cc:cc'),
+                   parser.OFPActionSetField(eth_dst='dd:dd:dd:dd:dd:dd'),
                    # output
                    parser.OFPActionOutput(1, ofproto.OFPCML_NO_BUFFER)
         ]
