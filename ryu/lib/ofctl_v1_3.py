@@ -81,6 +81,13 @@ def to_action(dp, dic):
         result = parser.OFPActionPushPbb(ethertype)
     elif action_type == 'POP_PBB':
         result = parser.OFPActionPopPbb()
+    elif action_type == 'ENCAP':
+        packet_type = int(dic.get('packet_type'))
+        result = parser.OFPActionEncap(packet_type)
+    elif action_type == 'DECAP':
+        cur_pkt_type = int(dic.get('cur_pkt_type'))
+        new_pkt_type = int(dic.get('new_pkt_type'))
+        result = parser.OFPActionDecap(cur_pkt_type, new_pkt_type)
     else:
         result = None
 
@@ -176,6 +183,10 @@ def action_to_str(act):
         buf = 'PUSH_PBB:' + str(act.ethertype)
     elif action_type == ofproto_v1_3.OFPAT_POP_PBB:
         buf = 'POP_PBB'
+    elif action_type == ofproto_v1_3.OFPAT_ENCAP:
+        buf = 'ENCAP: {packet_type:%s}' % (str(act.packet_type))
+    elif action_type == ofproto_v1_3.OFPAT_DECAP:
+        buf = 'DECAP: {cur_pkt_type:%s, new_pkt_type:%s}' % (str(act.cur_pkt_type), str(act.new_pkt_type))
     else:
         buf = 'UNKNOWN'
     return buf
@@ -275,7 +286,12 @@ def to_match(dp, attrs):
                'mpls_bos': int,
                'pbb_isid': to_match_masked_int,
                'tunnel_id': to_match_masked_int,
-               'ipv6_exthdr': to_match_masked_int}
+               'ipv6_exthdr': to_match_masked_int,
+               'gre_flags': int,
+               'gre_ver': int,
+               'gre_protocol': int,
+               'gre_key': int,
+               'gre_seqnum': int}
 
     keys = {'dl_dst': 'eth_dst',
             'dl_src': 'eth_src',
@@ -893,7 +909,9 @@ def get_group_features(dp, waiters):
                    ofp.OFPAT_DEC_NW_TTL: 'DEC_NW_TTL',
                    ofp.OFPAT_SET_FIELD: 'SET_FIELD',
                    ofp.OFPAT_PUSH_PBB: 'PUSH_PBB',
-                   ofp.OFPAT_POP_PBB: 'POP_PBB'}
+                   ofp.OFPAT_POP_PBB: 'POP_PBB',
+                   ofp.OFPAT_ENCAP: 'ENCAP',
+                   ofp.OFPAT_DECAP: 'DECAP'}
 
     stats = dp.ofproto_parser.OFPGroupFeaturesStatsRequest(dp, 0)
     msgs = []

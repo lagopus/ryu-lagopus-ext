@@ -77,6 +77,8 @@ GROUP = 'group'
 SET_NW_TTL = 'set-nw-ttl'
 DEC_NW_TTL = 'dec-nw-ttl'
 SET_FIELD = 'set-field'
+ENCAP = 'encap'
+DECAP = 'decap'
 
 # of-instruction
 APPLY_ACTIONS = 'apply-actions'
