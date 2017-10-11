@@ -24,7 +24,7 @@
 				{
 				    "OXMTlv":{
 					"field":"udp_dst",
-					"value":2125
+					"value":2152
 				    }
 				}
 			    ]
@@ -101,7 +101,7 @@
 		"ingress":[
 		    "ethernet(dst='22:33:33:33:33:33', src='12:22:22:22:22:22', ethertype=0x0800)",
 		    "ipv4(proto=17, src='10.0.0.1', dst='172.21.0.2')",
-		    "udp(dst_port=2125, src_port=5432)",
+		    "udp(dst_port=2152, src_port=5432)",
 		    "gtpu(teid=1)",
 		    "ipv4(proto=6, src='1.1.1.1', dst='2.2.2.2')",
 		    "tcp(dst_port=2222, src_port=1111)",

@@ -27,7 +27,7 @@ class TunnelVXLAN(app_manager.RyuApp):
         # install the table-miss flow entry.
 
         # Encap Flow
-        match = parser.OFPMatch(in_port=1)
+        match = parser.OFPMatch(in_port=1, eth_type=2048)
         actions = [
                    # encap VXLAN
                    parser.OFPActionEncap(type_vxl),
@@ -37,17 +37,18 @@ class TunnelVXLAN(app_manager.RyuApp):
                    parser.OFPActionSetField(udp_dst=4789),
                    parser.OFPActionEncap(type_ip),
                    parser.OFPActionSetField(ipv4_src='10.0.0.1'),
-                   parser.OFPActionSetField(ipv4_dst='10.0.0.2'),
+                   parser.OFPActionSetField(ipv4_dst='172.21.0.2'),
+                   parser.OFPActionSetNwTtl(nw_ttl=64),
                    parser.OFPActionEncap(type_eth),
-                   parser.OFPActionSetField(eth_src='aa:aa:aa:aa:aa:aa'),
-                   parser.OFPActionSetField(eth_dst='bb:bb:bb:bb:bb:bb'),
+                   parser.OFPActionSetField(eth_src='12:22:22:22:22:22'),
+                   parser.OFPActionSetField(eth_dst='22:33:33:33:33:33'),
                    # output
                    parser.OFPActionOutput(2, ofproto.OFPCML_NO_BUFFER)
         ]
         self.add_flow(datapath, 0, match, actions)
 
         # Decap Flow
-        match = parser.OFPMatch(in_port=2)
+        match = parser.OFPMatch(in_port=2, eth_type=2048, ip_proto=17, udp_dst=4789)
         actions = [
                    # decap VXLAN
                    parser.OFPActionDecap(type_eth, type_ip),

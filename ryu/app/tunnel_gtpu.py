@@ -24,22 +24,17 @@ class TunnelGTPU(app_manager.RyuApp):
         type_gtpu  = (ofproto.OFPHTN_UDP_TCP_PORT << 16) | 2152
         type_next = (ofproto.OFPHTN_ONF << 16) | ofproto.OFPHTO_USE_NEXT_PROTO
 
-        print "type_eth ",  type_eth
-        print "type_ip ",   type_ip
-        print "type_udp ",  type_udp
-        print "type_gtpu ",  type_gtpu
-        print "type_next ", type_next
-
         # install the table-miss flow entry.
 
         # Encap Flow
-        match = parser.OFPMatch(in_port=1)
+        match = parser.OFPMatch(in_port=1, eth_type=2048)
         actions = [
                    # decap ether
                    parser.OFPActionDecap(type_eth, type_ip),
                    # encap gtpu
                    parser.OFPActionEncap(type_gtpu),
-                   # set gtpu teid_field
+                   # set gtpu field
+                   parser.OFPActionSetField(gtpu_flags=48),
                    parser.OFPActionSetField(gtpu_teid=1),
                    # encap udp
                    parser.OFPActionEncap(type_udp),
@@ -50,19 +45,20 @@ class TunnelGTPU(app_manager.RyuApp):
                    parser.OFPActionEncap(type_ip),
                    # set ip field
                    parser.OFPActionSetField(ipv4_src='10.0.0.1'),
-                   parser.OFPActionSetField(ipv4_dst='10.0.0.2'),
+                   parser.OFPActionSetField(ipv4_dst='172.21.0.2'),
+                   parser.OFPActionSetNwTtl(nw_ttl=64),
                    # encap ether
                    parser.OFPActionEncap(type_eth),
                    # set ether field
-                   parser.OFPActionSetField(eth_src='aa:aa:aa:aa:aa:aa'),
-                   parser.OFPActionSetField(eth_dst='bb:bb:bb:bb:bb:bb'),
+                   parser.OFPActionSetField(eth_src='12:22:22:22:22:22'),
+                   parser.OFPActionSetField(eth_dst='22:33:33:33:33:33'),
                    # output
                    parser.OFPActionOutput(2, ofproto.OFPCML_NO_BUFFER)
         ]
         self.add_flow(datapath, 0, match, actions)
 
         # Decap Flow
-        match = parser.OFPMatch(in_port=2)
+        match = parser.OFPMatch(in_port=2, eth_type=2048, ip_proto=17, udp_dst=2152)
         actions = [
                    # decap ether-ip
                    parser.OFPActionDecap(type_eth, type_ip),
@@ -75,8 +71,8 @@ class TunnelGTPU(app_manager.RyuApp):
                    # encap ether
                    parser.OFPActionEncap(type_eth),
                    # set ether field
-                   parser.OFPActionSetField(eth_src='cc:cc:cc:cc:cc:cc'),
-                   parser.OFPActionSetField(eth_dst='dd:dd:dd:dd:dd:dd'),
+                   parser.OFPActionSetField(eth_src='12:11:11:11:11:11'),
+                   parser.OFPActionSetField(eth_dst='22:22:22:22:22:22'),
                    # output
                    parser.OFPActionOutput(1, ofproto.OFPCML_NO_BUFFER)
         ]
