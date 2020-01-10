@@ -17,6 +17,8 @@
 global flags
 """
 
+from distutils.version import LooseVersion
+
 from ryu import cfg
 
 CONF = cfg.CONF
@@ -57,3 +59,71 @@ CONF.register_cli_opts([
                help='interval time in seconds of each test '
                '(default: 0)'),
 ], group='test-switch')
+
+
+DEFAULT_RPC_PORT = 50002
+DEFAULT_RPC_HOST = '0.0.0.0'
+
+CONF.register_cli_opts([
+    cfg.IntOpt('rpc-port', default=DEFAULT_RPC_PORT,
+               help='Port for RPC server (default: %s)' % DEFAULT_RPC_PORT),
+    cfg.StrOpt('rpc-host', default=DEFAULT_RPC_HOST,
+               help='IP for RPC server (default: %s)' % DEFAULT_RPC_HOST),
+    cfg.StrOpt('config-file', default=None,
+               help='The config file formatted in Python source file. '
+                    'Please refer to "bgp_sample_conf.py" for details.')
+], group='bgp-app')
+
+
+DEFAULT_ZSERV_HOST = '/var/run/quagga/zserv.api'
+DEFAULT_ZSERV_PORT = 2600
+DEFAULT_ZSERV_VERSION = 2  # Version of Ubuntu 16.04 LTS packaged Quagga
+DEFAULT_ZSERV_CLIENT_ROUTE_TYPE = 'BGP'
+DEFAULT_ZSERV_INTERVAL = 10
+DEFAULT_ZSERV_DATABASE = 'sqlite:///zebra.db'
+DEFAULT_ZSERV_ROUTER_ID = '1.1.1.1'
+# For the backward compatibility with Quagga, the default FRRouting version
+# should be None.
+DEFAULT_ZSERV_FRR_VERSION = '0.0'
+
+# Hack: In oslo_config.cfg.Opt, ConfigType might access __class__ attribute
+# for equal comparison, but on Python 2, LooseVersion does not have __class__
+# attribute and it causes AttributeError. So here inject __class__ attribute
+# into LooseVersion class.
+if not hasattr(LooseVersion, '__class__'):
+    LooseVersion.__class__ = LooseVersion
+
+CONF.register_cli_opts([
+    cfg.StrOpt(
+        'server-host', default=DEFAULT_ZSERV_HOST,
+        help='Path to Unix Socket or IP address of Zebra server '
+             '(default: %s)' % DEFAULT_ZSERV_HOST),
+    cfg.IntOpt(
+        'server-port', default=DEFAULT_ZSERV_PORT,
+        help='Port number of Zebra server '
+             '(default: %s)'
+        % DEFAULT_ZSERV_PORT),
+    cfg.IntOpt(
+        'server-version', default=DEFAULT_ZSERV_VERSION,
+        help='Zebra protocol version of Zebra server '
+             '(default: %s)' % DEFAULT_ZSERV_VERSION),
+    cfg.StrOpt(
+        'client-route-type', default=DEFAULT_ZSERV_CLIENT_ROUTE_TYPE,
+        help='Zebra route type advertised by Zebra client service. '
+             '(default: %s)' % DEFAULT_ZSERV_CLIENT_ROUTE_TYPE),
+    cfg.IntOpt(
+        'retry-interval', default=DEFAULT_ZSERV_INTERVAL,
+        help='Retry interval connecting to Zebra server '
+             '(default: %s)' % DEFAULT_ZSERV_INTERVAL),
+    cfg.StrOpt(
+        'db-url', default=DEFAULT_ZSERV_DATABASE,
+        help='URL to database used by Zebra protocol service '
+             '(default: %s)' % DEFAULT_ZSERV_DATABASE),
+    cfg.StrOpt(
+        'router-id', default=DEFAULT_ZSERV_ROUTER_ID,
+        help='Initial Router ID used by Zebra protocol service '
+             '(default: %s)' % DEFAULT_ZSERV_ROUTER_ID),
+    cfg.Opt(
+        'frr-version', LooseVersion, default=DEFAULT_ZSERV_FRR_VERSION,
+        help='FRRouting version when integrated with FRRouting (e.g., 3.0)'),
+], group='zapi')

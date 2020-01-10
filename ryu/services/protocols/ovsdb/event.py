@@ -92,11 +92,15 @@ class EventModifyRequest(ryu_event.EventRequestBase):
 
         port_uuid = reply.insert_uuids[new_port_uuid]
     """
+
     def __init__(self, system_id, func):
         super(EventModifyRequest, self).__init__()
         self.dst = 'OVSDB'
         self.system_id = system_id
         self.func = func
+
+    def __str__(self):
+        return '%s<system_id=%s>' % (self.__class__.__name__, self.system_id)
 
 
 class EventModifyReply(ryu_event.EventReplyBase):
@@ -106,15 +110,27 @@ class EventModifyReply(ryu_event.EventReplyBase):
         self.insert_uuids = insert_uuids
         self.err_msg = err_msg
 
+    def __str__(self):
+        return ('%s<system_id=%s, status=%s, insert_uuids=%s, error_msg=%s>'
+                % (self.__class__.__name__,
+                   self.system_id,
+                   self.status,
+                   self.insert_uuids,
+                   self.err_msg))
+
 
 class EventNewOVSDBConnection(ryu_event.EventBase):
-    def __init__(self, system_id):
+    def __init__(self, client):
         super(EventNewOVSDBConnection, self).__init__()
-        self.system_id = system_id
+        self.client = client
 
     def __str__(self):
         return '%s<system_id=%s>' % (self.__class__.__name__,
-                                     self.system_id)
+                                     self.client.system_id)
+
+    @property
+    def system_id(self):
+        return self.client.system_id
 
 
 class EventReadRequest(ryu_event.EventRequestBase):

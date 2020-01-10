@@ -19,7 +19,7 @@ OpenFlow 1.2 definitions.
 """
 
 from ryu.lib import type_desc
-from ryu.ofproto import nx_match
+from ryu.ofproto import nicira_ext
 from ryu.ofproto import ofproto_utils
 from ryu.ofproto import oxm_fields
 
@@ -792,6 +792,7 @@ def oxm_tlv_header_extract_length(header):
         length = header & 0xff
     return length
 
+
 oxm_types = [
     oxm_fields.OpenFlowBasic('in_port', 0, type_desc.Int4),
     oxm_fields.OpenFlowBasic('in_phy_port', 1, type_desc.Int4),
@@ -836,7 +837,7 @@ oxm_types = [
     # EXT-233 Output match Extension
     # NOTE(yamamoto): The spec says uint64_t but I assume it's an error.
     oxm_fields.ONFExperimenter('actset_output', 43, type_desc.Int4),
-] + nx_match.oxm_types
+] + nicira_ext.oxm_types
 
 oxm_fields.generate(__name__)
 

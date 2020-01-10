@@ -53,21 +53,30 @@ def register_msg_parser(version):
 
 
 def msg(datapath, version, msg_type, msg_len, xid, buf):
-    assert len(buf) >= msg_len
+    exp = None
+    try:
+        assert len(buf) >= msg_len
+    except AssertionError as e:
+        exp = e
 
     msg_parser = _MSG_PARSERS.get(version)
     if msg_parser is None:
         raise exception.OFPUnknownVersion(version=version)
 
     try:
-        return msg_parser(datapath, version, msg_type, msg_len, xid, buf)
+        msg = msg_parser(datapath, version, msg_type, msg_len, xid, buf)
+    except exception.OFPTruncatedMessage as e:
+        raise e
     except:
         LOG.exception(
             'Encountered an error while parsing OpenFlow packet from switch. '
             'This implies the switch sent a malformed OpenFlow packet. '
             'version 0x%02x msg_type %d msg_len %d xid %d buf %s',
             version, msg_type, msg_len, xid, utils.hex_array(buf))
-        return None
+        msg = None
+    if exp:
+        raise exp
+    return msg
 
 
 def create_list_of_base_attributes(f):
@@ -114,6 +123,56 @@ def ofp_msg_from_jsondict(dp, jsondict):
         cls = getattr(parser, k)
         assert issubclass(cls, MsgBase)
         return cls.from_jsondict(v, datapath=dp)
+
+
+def ofp_instruction_from_jsondict(dp, jsonlist, encap=True):
+    """
+    This function is intended to be used with
+    ryu.lib.ofctl_string.ofp_instruction_from_str.
+    It is very similar to ofp_msg_from_jsondict, but works on
+    a list of OFPInstructions/OFPActions. It also encapsulates
+    OFPAction into OFPInstructionActions, as >OF1.0 OFPFlowMod
+    requires that.
+
+    This function takes the following arguments.
+
+    ======== ==================================================
+    Argument Description
+    ======== ==================================================
+    dp       An instance of ryu.controller.Datapath.
+    jsonlist A list of JSON style dictionaries.
+    encap    Encapsulate OFPAction into OFPInstructionActions.
+             Must be false for OF10.
+    ======== ==================================================
+    """
+    proto = dp.ofproto
+    parser = dp.ofproto_parser
+    actions = []
+    result = []
+    for jsondict in jsonlist:
+        assert len(jsondict) == 1
+        k, v = list(jsondict.items())[0]
+        cls = getattr(parser, k)
+        if issubclass(cls, parser.OFPAction):
+            if encap:
+                actions.append(cls.from_jsondict(v))
+                continue
+        else:
+            ofpinst = getattr(parser, 'OFPInstruction', None)
+            if not ofpinst or not issubclass(cls, ofpinst):
+                raise ValueError("Supplied jsondict is of wrong type: %s",
+                                 jsondict)
+        result.append(cls.from_jsondict(v))
+
+    if not encap:
+        return result
+
+    if actions:
+        # Although the OpenFlow spec says Apply Actions is executed first,
+        # let's place it in the head as a precaution.
+        result = [parser.OFPInstructionActions(
+            proto.OFPIT_APPLY_ACTIONS, actions)] + result
+    return result
 
 
 class StringifyMixin(stringify.StringifyMixin):
@@ -170,7 +229,7 @@ class MsgBase(StringifyMixin):
 
     def __str__(self):
         def hexify(x):
-            return hex(x) if isinstance(x, int) else x
+            return hex(x) if isinstance(x, six.integer_types) else x
         buf = 'version=%s,msg_type=%s,msg_len=%s,xid=%s,' %\
               (hexify(self.version), hexify(self.msg_type),
                hexify(self.msg_len), hexify(self.xid))

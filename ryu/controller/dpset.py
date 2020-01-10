@@ -44,6 +44,23 @@ class EventDPBase(event.EventBase):
 
 
 class EventDP(EventDPBase):
+    """
+    An event class to notify connect/disconnect of a switch.
+
+    For OpenFlow switches, one can get the same notification by observing
+    ryu.controller.ofp_event.EventOFPStateChange.
+    An instance has at least the following attributes.
+
+    ========= =================================================================
+    Attribute Description
+    ========= =================================================================
+    dp        A ryu.controller.controller.Datapath instance of the switch
+    enter     True when the switch connected to our controller.  False for
+              disconnect.
+    ports     A list of port instances.
+    ========= =================================================================
+    """
+
     def __init__(self, dp, enter_leave):
         # enter_leave
         # True: dp entered
@@ -67,16 +84,64 @@ class EventPortBase(EventDPBase):
 
 
 class EventPortAdd(EventPortBase):
+    """
+    An event class for switch port status "ADD" notification.
+
+    This event is generated when a new port is added to a switch.
+    For OpenFlow switches, one can get the same notification by observing
+    ryu.controller.ofp_event.EventOFPPortStatus.
+    An instance has at least the following attributes.
+
+    ========= =================================================================
+    Attribute Description
+    ========= =================================================================
+    dp        A ryu.controller.controller.Datapath instance of the switch
+    port      port number
+    ========= =================================================================
+    """
+
     def __init__(self, dp, port):
         super(EventPortAdd, self).__init__(dp, port)
 
 
 class EventPortDelete(EventPortBase):
+    """
+    An event class for switch port status "DELETE" notification.
+
+    This event is generated when a port is removed from a switch.
+    For OpenFlow switches, one can get the same notification by observing
+    ryu.controller.ofp_event.EventOFPPortStatus.
+    An instance has at least the following attributes.
+
+    ========= =================================================================
+    Attribute Description
+    ========= =================================================================
+    dp        A ryu.controller.controller.Datapath instance of the switch
+    port      port number
+    ========= =================================================================
+    """
+
     def __init__(self, dp, port):
         super(EventPortDelete, self).__init__(dp, port)
 
 
 class EventPortModify(EventPortBase):
+    """
+    An event class for switch port status "MODIFY" notification.
+
+    This event is generated when some attribute of a port is changed.
+    For OpenFlow switches, one can get the same notification by observing
+    ryu.controller.ofp_event.EventOFPPortStatus.
+    An instance has at least the following attributes.
+
+    ========= ====================================================================
+    Attribute Description
+    ========= ====================================================================
+    dp        A ryu.controller.controller.Datapath instance of the switch
+    port      port number
+    ========= ====================================================================
+    """
+
     def __init__(self, dp, new_port):
         super(EventPortModify, self).__init__(dp, new_port)
 
@@ -100,10 +165,33 @@ class DPSet(app_manager.RyuApp):
     """
     DPSet application manages a set of switches (datapaths)
     connected to this controller.
+
+    Usage Example::
+
+        # ...(snip)...
+        from ryu.controller import dpset
+
+
+        class MyApp(app_manager.RyuApp):
+            _CONTEXTS = {
+                'dpset': dpset.DPSet,
+            }
+
+            def __init__(self, *args, **kwargs):
+                super(MyApp, self).__init__(*args, **kwargs)
+                # Stores DPSet instance to call its API in this app
+                self.dpset = kwargs['dpset']
+
+            def _my_handler(self):
+                # Get the datapath object which has the given dpid
+                dpid = 1
+                dp = self.dpset.get(dpid)
+                if dp is None:
+                    self.logger.info('No such datapath: dpid=%d', dpid)
     """
 
     def __init__(self, *args, **kwargs):
-        super(DPSet, self).__init__()
+        super(DPSet, self).__init__(*args, **kwargs)
         self.name = 'dpset'
 
         self.dps = {}   # datapath_id => class Datapath
@@ -153,7 +241,7 @@ class DPSet(app_manager.RyuApp):
         # Now datapath is already dead, so port status change event doesn't
         # interfere us.
         ev = EventDP(dp, False)
-        for port in self.port_state.get(dp.id, {}).values():
+        for port in list(self.port_state.get(dp.id, {}).values()):
             self._port_deleted(dp, port)
             ev.ports.append(port)
 
@@ -173,9 +261,10 @@ class DPSet(app_manager.RyuApp):
         """
         This method returns a list of tuples which represents
         instances for switches connected to this controller.
-        The tuple consists of a Datapath Id and an instance of
+        The tuple consists of a Datapath ID and an instance of
         ryu.controller.controller.Datapath.
-        A return value looks like the following:
+
+        A return value looks like the following::
 
             [ (dpid_A, Datapath_A), (dpid_B, Datapath_B), ... ]
         """

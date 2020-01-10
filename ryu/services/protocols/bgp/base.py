@@ -15,21 +15,33 @@
 """
   Defines some base class related to managing green threads.
 """
+from __future__ import absolute_import
+
 import abc
+from collections import OrderedDict
 import logging
 import socket
 import time
 import traceback
 import weakref
+
 import netaddr
+import six
 
 from ryu.lib import hub
 from ryu.lib import sockopt
+from ryu.lib import ip
 from ryu.lib.hub import Timeout
 from ryu.lib.packet.bgp import RF_IPv4_UC
 from ryu.lib.packet.bgp import RF_IPv6_UC
 from ryu.lib.packet.bgp import RF_IPv4_VPN
 from ryu.lib.packet.bgp import RF_IPv6_VPN
+from ryu.lib.packet.bgp import RF_L2_EVPN
+from ryu.lib.packet.bgp import RF_IPv4_FLOWSPEC
+from ryu.lib.packet.bgp import RF_IPv6_FLOWSPEC
+from ryu.lib.packet.bgp import RF_VPNv4_FLOWSPEC
+from ryu.lib.packet.bgp import RF_VPNv6_FLOWSPEC
+from ryu.lib.packet.bgp import RF_L2VPN_FLOWSPEC
 from ryu.lib.packet.bgp import RF_RTC_UC
 from ryu.services.protocols.bgp.utils.circlist import CircularListType
 from ryu.services.protocols.bgp.utils.evtlet import LoopingCall
@@ -38,23 +50,24 @@ from ryu.services.protocols.bgp.utils.evtlet import LoopingCall
 # Logger instance for this module.
 LOG = logging.getLogger('bgpspeaker.base')
 
-
-try:
-    from collections import OrderedDict
-except ImportError:
-    from ordereddict import OrderedDict
-
 # Pointer to active/available OrderedDict.
 OrderedDict = OrderedDict
 
 
 # Currently supported address families.
-SUPPORTED_GLOBAL_RF = set([RF_IPv4_UC,
-                           RF_IPv6_UC,
-                           RF_IPv4_VPN,
-                           RF_RTC_UC,
-                           RF_IPv6_VPN
-                           ])
+SUPPORTED_GLOBAL_RF = {
+    RF_IPv4_UC,
+    RF_IPv6_UC,
+    RF_IPv4_VPN,
+    RF_RTC_UC,
+    RF_IPv6_VPN,
+    RF_L2_EVPN,
+    RF_IPv4_FLOWSPEC,
+    RF_IPv6_FLOWSPEC,
+    RF_VPNv4_FLOWSPEC,
+    RF_VPNv6_FLOWSPEC,
+    RF_L2VPN_FLOWSPEC,
+}
 
 
 # Various error codes
@@ -104,17 +117,17 @@ def add_bgp_error_metadata(code, sub_code, def_desc='unknown'):
         raise ValueError('BGPSException with code %d and sub-code %d '
                          'already defined.' % (code, sub_code))
 
-    def decorator(klass):
+    def decorator(subclass):
         """Sets class constants for exception code and sub-code.
 
         If given class is sub-class of BGPSException we sets class constants.
         """
-        if issubclass(klass, BGPSException):
-            _EXCEPTION_REGISTRY[(code, sub_code)] = klass
-            klass.CODE = code
-            klass.SUB_CODE = sub_code
-            klass.DEF_DESC = def_desc
-        return klass
+        if issubclass(subclass, BGPSException):
+            _EXCEPTION_REGISTRY[(code, sub_code)] = subclass
+            subclass.CODE = code
+            subclass.SUB_CODE = sub_code
+            subclass.DEF_DESC = def_desc
+        return subclass
     return decorator
 
 
@@ -127,6 +140,7 @@ class ActivityException(BGPSException):
     pass
 
 
+@six.add_metaclass(abc.ABCMeta)
 class Activity(object):
     """Base class for a thread of execution that provides some custom settings.
 
@@ -135,7 +149,6 @@ class Activity(object):
     to start another activity or greenthread. Activity is also holds pointers
     to sockets that it or its child activities of threads have create.
     """
-    __metaclass__ = abc.ABCMeta
 
     def __init__(self, name=None):
         self._name = name
@@ -250,28 +263,29 @@ class Activity(object):
     def pause(self, seconds=0):
         """Relinquishes hub for given number of seconds.
 
-        In other words is puts to sleep to give other greeenthread a chance to
+        In other words is puts to sleep to give other greenthread a chance to
         run.
         """
         hub.sleep(seconds)
 
-    def _stop_child_activities(self):
+    def _stop_child_activities(self, name=None):
         """Stop all child activities spawn by this activity.
         """
-        # Iterating over items list instead of iteritems to avoid dictionary
-        # changed size during iteration
-        child_activities = self._child_activity_map.items()
-        for child_name, child_activity in child_activities:
+        # Makes a list copy of items() to avoid dictionary size changed
+        # during iteration
+        for child_name, child in list(self._child_activity_map.items()):
+            if name is not None and name != child_name:
+                continue
             LOG.debug('%s: Stopping child activity %s ', self.name, child_name)
-            if child_activity.started:
-                child_activity.stop()
+            if child.started:
+                child.stop()
+            self._child_activity_map.pop(child_name, None)
 
     def _stop_child_threads(self, name=None):
         """Stops all threads spawn by this activity.
         """
-        child_threads = self._child_thread_map.items()
-        for thread_name, thread in child_threads:
-            if not name or thread_name is name:
+        for thread_name, thread in list(self._child_thread_map.items()):
+            if name is not None and thread_name is name:
                 LOG.debug('%s: Stopping child thread %s',
                           self.name, thread_name)
                 thread.kill()
@@ -280,14 +294,12 @@ class Activity(object):
     def _close_asso_sockets(self):
         """Closes all the sockets linked to this activity.
         """
-        asso_sockets = self._asso_socket_map.items()
-        for sock_name, sock in asso_sockets:
+        for sock_name, sock in list(self._asso_socket_map.items()):
             LOG.debug('%s: Closing socket %s - %s', self.name, sock_name, sock)
             sock.close()
 
     def _stop_timers(self):
-        timers = self._timers.items()
-        for timer_name, timer in timers:
+        for timer_name, timer in list(self._timers.items()):
             LOG.debug('%s: Stopping timer %s', self.name, timer_name)
             timer.stop()
 
@@ -324,11 +336,11 @@ class Activity(object):
 
     def get_remotename(self, sock):
         addr, port = sock.getpeername()[:2]
-        return (self._canonicalize_ip(addr), str(port))
+        return self._canonicalize_ip(addr), str(port)
 
     def get_localname(self, sock):
         addr, port = sock.getsockname()[:2]
-        return (self._canonicalize_ip(addr), str(port))
+        return self._canonicalize_ip(addr), str(port)
 
     def _create_listen_socket(self, family, loc_addr):
         s = socket.socket(family)
@@ -352,11 +364,11 @@ class Activity(object):
 
         For each connection `server_factory` starts a new protocol.
         """
-        info = socket.getaddrinfo(None, loc_addr[1], socket.AF_UNSPEC,
+        info = socket.getaddrinfo(loc_addr[0], loc_addr[1], socket.AF_UNSPEC,
                                   socket.SOCK_STREAM, 0, socket.AI_PASSIVE)
         listen_sockets = {}
         for res in info:
-            af, socktype, proto, cannonname, sa = res
+            af, socktype, proto, _, sa = res
             sock = None
             try:
                 sock = socket.socket(af, socktype, proto)
@@ -367,13 +379,15 @@ class Activity(object):
                 sock.bind(sa)
                 sock.listen(50)
                 listen_sockets[sa] = sock
-            except socket.error:
+            except socket.error as e:
+                LOG.error('Error creating socket: %s', e)
+
                 if sock:
                     sock.close()
 
         count = 0
         server = None
-        for sa in listen_sockets.keys():
+        for sa in listen_sockets:
             name = self.name + '_server@' + str(sa[0])
             self._asso_socket_map[name] = listen_sockets[sa]
             if count == 0:
@@ -397,7 +411,7 @@ class Activity(object):
         The socket is bound to `bind_address` if specified.
         """
         LOG.debug('Connect TCP called for %s:%s', peer_addr[0], peer_addr[1])
-        if netaddr.valid_ipv4(peer_addr[0]):
+        if ip.valid_ipv4(peer_addr[0]):
             family = socket.AF_INET
         else:
             family = socket.AF_INET6
@@ -408,7 +422,7 @@ class Activity(object):
             if password:
                 sockopt.set_tcp_md5sig(sock, peer_addr[0], password)
             sock.connect(peer_addr)
-            # socket.error exception is rasied in cese of timeout and
+            # socket.error exception is raised in case of timeout and
             # the following code is executed only when the connection
             # is established.
 
@@ -446,15 +460,15 @@ class Sink(object):
     @staticmethod
     def next_index():
         """Increments the sink index and returns the value."""
-        Sink.idx = Sink.idx + 1
+        Sink.idx += 1
         return Sink.idx
 
     def __init__(self):
         # A small integer that represents this sink.
         self.index = Sink.next_index()
 
-        # Event used to signal enqueing.
-        from utils.evtlet import EventletIOFactory
+        # Create an event for signal enqueuing.
+        from .utils.evtlet import EventletIOFactory
         self.outgoing_msg_event = EventletIOFactory.create_custom_event()
 
         self.messages_queued = 0
@@ -483,7 +497,7 @@ class Sink(object):
 
         If message list currently has no messages, the calling thread will
         be put to sleep until we have at-least one message in the list that
-        can be poped and returned.
+        can be popped and returned.
         """
         # We pick the first outgoing available and send it.
         outgoing_msg = self.outgoing_msg_list.pop_first()
@@ -494,6 +508,9 @@ class Sink(object):
             outgoing_msg = self.outgoing_msg_list.pop_first()
 
         return outgoing_msg
+
+    # For Python 3 compatibility
+    __next__ = next
 
 
 #

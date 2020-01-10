@@ -16,10 +16,11 @@
 
 import logging
 import os
+from ryu.lib import ip
 
 
-# we don't bother to use cfg.py because monkey patch needs to be
-# called very early.  instead, we use an environment variable to
+# We don't bother to use cfg.py because monkey patch needs to be
+# called very early. Instead, we use an environment variable to
 # select the type of hub.
 HUB_TYPE = os.getenv('RYU_HUB_TYPE', 'eventlet')
 
@@ -27,6 +28,10 @@ LOG = logging.getLogger('ryu.lib.hub')
 
 if HUB_TYPE == 'eventlet':
     import eventlet
+    # HACK:
+    # sleep() is the workaround for the following issue.
+    # https://github.com/eventlet/eventlet/issues/401
+    eventlet.sleep()
     import eventlet.event
     import eventlet.queue
     import eventlet.semaphore
@@ -37,6 +42,7 @@ if HUB_TYPE == 'eventlet':
     import ssl
     import socket
     import traceback
+    import sys
 
     getcurrent = eventlet.getcurrent
     patch = eventlet.monkey_patch
@@ -45,34 +51,42 @@ if HUB_TYPE == 'eventlet':
     connect = eventlet.connect
 
     def spawn(*args, **kwargs):
+        raise_error = kwargs.pop('raise_error', False)
+
         def _launch(func, *args, **kwargs):
-            # mimic gevent's default raise_error=False behaviour
-            # by not propergating an exception to the joiner.
+            # Mimic gevent's default raise_error=False behaviour
+            # by not propagating an exception to the joiner.
             try:
-                func(*args, **kwargs)
-            except greenlet.GreenletExit:
+                return func(*args, **kwargs)
+            except TaskExit:
                 pass
-            except:
-                # log uncaught exception.
-                # note: this is an intentional divergence from gevent
-                # behaviour.  gevent silently ignores such exceptions.
+            except BaseException as e:
+                if raise_error:
+                    raise e
+                # Log uncaught exception.
+                # Note: this is an intentional divergence from gevent
+                # behaviour; gevent silently ignores such exceptions.
                 LOG.error('hub: uncaught exception: %s',
                           traceback.format_exc())
 
         return eventlet.spawn(_launch, *args, **kwargs)
 
     def spawn_after(seconds, *args, **kwargs):
+        raise_error = kwargs.pop('raise_error', False)
+
         def _launch(func, *args, **kwargs):
-            # mimic gevent's default raise_error=False behaviour
-            # by not propergating an exception to the joiner.
+            # Mimic gevent's default raise_error=False behaviour
+            # by not propagating an exception to the joiner.
             try:
-                func(*args, **kwargs)
-            except greenlet.GreenletExit:
+                return func(*args, **kwargs)
+            except TaskExit:
                 pass
-            except:
-                # log uncaught exception.
-                # note: this is an intentional divergence from gevent
-                # behaviour.  gevent silently ignores such exceptions.
+            except BaseException as e:
+                if raise_error:
+                    raise e
+                # Log uncaught exception.
+                # Note: this is an intentional divergence from gevent
+                # behaviour; gevent silently ignores such exceptions.
                 LOG.error('hub: uncaught exception: %s',
                           traceback.format_exc())
 
@@ -83,17 +97,18 @@ if HUB_TYPE == 'eventlet':
 
     def joinall(threads):
         for t in threads:
-            # this try-except is necessary when killing an inactive
-            # greenthread
+            # This try-except is necessary when killing an inactive
+            # greenthread.
             try:
                 t.wait()
-            except greenlet.GreenletExit:
+            except TaskExit:
                 pass
 
-    Queue = eventlet.queue.Queue
+    Queue = eventlet.queue.LightQueue
     QueueEmpty = eventlet.queue.Empty
     Semaphore = eventlet.semaphore.Semaphore
     BoundedSemaphore = eventlet.semaphore.BoundedSemaphore
+    TaskExit = greenlet.GreenletExit
 
     class StreamServer(object):
         def __init__(self, listen_info, handle=None, backlog=None,
@@ -101,15 +116,30 @@ if HUB_TYPE == 'eventlet':
             assert backlog is None
             assert spawn == 'default'
 
-            if ':' in listen_info[0]:
+            if ip.valid_ipv6(listen_info[0]):
                 self.server = eventlet.listen(listen_info,
                                               family=socket.AF_INET6)
+            elif os.path.isdir(os.path.dirname(listen_info[0])):
+                # Case for Unix domain socket
+                self.server = eventlet.listen(listen_info[0],
+                                              family=socket.AF_UNIX)
             else:
                 self.server = eventlet.listen(listen_info)
+
             if ssl_args:
                 def wrap_and_handle(sock, addr):
                     ssl_args.setdefault('server_side', True)
-                    handle(ssl.wrap_socket(sock, **ssl_args), addr)
+                    if 'ssl_ctx' in ssl_args:
+                        ctx = ssl_args.pop('ssl_ctx')
+                        ctx.load_cert_chain(ssl_args.pop('certfile'),
+                                            ssl_args.pop('keyfile'))
+                        if 'cert_reqs' in ssl_args:
+                            ctx.verify_mode = ssl_args.pop('cert_reqs')
+                        if 'ca_certs' in ssl_args:
+                            ctx.load_verify_locations(ssl_args.pop('ca_certs'))
+                        handle(ctx.wrap_socket(sock, **ssl_args), addr)
+                    else:
+                        handle(ssl.wrap_socket(sock, **ssl_args), addr)
 
                 self.handle = wrap_and_handle
             else:
@@ -119,6 +149,39 @@ if HUB_TYPE == 'eventlet':
             while True:
                 sock, addr = self.server.accept()
                 spawn(self.handle, sock, addr)
+
+    class StreamClient(object):
+        def __init__(self, addr, timeout=None, **ssl_args):
+            assert ip.valid_ipv4(addr[0]) or ip.valid_ipv6(addr[0])
+            self.addr = addr
+            self.timeout = timeout
+            self.ssl_args = ssl_args
+            self._is_active = True
+
+        def connect(self):
+            try:
+                if self.timeout is not None:
+                    client = socket.create_connection(self.addr,
+                                                      timeout=self.timeout)
+                else:
+                    client = socket.create_connection(self.addr)
+            except socket.error:
+                return None
+
+            if self.ssl_args:
+                client = ssl.wrap_socket(client, **self.ssl_args)
+
+            return client
+
+        def connect_loop(self, handle, interval):
+            while self._is_active:
+                sock = self.connect()
+                if sock:
+                    handle(sock, self.addr)
+                sleep(interval)
+
+        def stop(self):
+            self._is_active = False
 
     class LoggingWrapper(object):
         def write(self, message):
@@ -144,9 +207,9 @@ if HUB_TYPE == 'eventlet':
 
         def _broadcast(self):
             self._ev.send()
-            # because eventlet Event doesn't allow mutiple send() on an event,
-            # re-create the underlying event.
-            # note: _ev.reset() is obsolete.
+            # Since eventlet Event doesn't allow multiple send() operations
+            # on an event, re-create the underlying event.
+            # Note: _ev.reset() is obsolete.
             self._ev = eventlet.event.Event()
 
         def is_set(self):

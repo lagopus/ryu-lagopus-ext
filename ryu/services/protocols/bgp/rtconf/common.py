@@ -19,8 +19,10 @@
 import logging
 import numbers
 
+from ryu.lib import ip
+
 from ryu.services.protocols.bgp.utils.validation import is_valid_ipv4
-from ryu.services.protocols.bgp.utils.validation import is_valid_old_asn
+from ryu.services.protocols.bgp.utils.validation import is_valid_asn
 
 from ryu.services.protocols.bgp import rtconf
 from ryu.services.protocols.bgp.rtconf.base import BaseConf
@@ -37,9 +39,17 @@ LOG = logging.getLogger('bgpspeaker.rtconf.common')
 # Global configuration settings.
 LOCAL_AS = 'local_as'
 ROUTER_ID = 'router_id'
+CLUSTER_ID = 'cluster_id'
 LABEL_RANGE = 'label_range'
 LABEL_RANGE_MAX = 'max'
 LABEL_RANGE_MIN = 'min'
+LOCAL_PREF = 'local_pref'
+
+# Similar to Cisco command 'allowas-in'. Allows the local ASN in the path.
+# Facilitates auto rd, auto rt import/export
+# ("rd auto/route-target both auto") and simplified spine/leaf architectures,
+# sharing an ASN between e.g. leafs.
+ALLOW_LOCAL_AS_IN_COUNT = 'allow_local_as_in_count'
 
 # Configuration that can be set at global level as well as per context
 # (session/vrf) level
@@ -64,6 +74,7 @@ REFRESH_STALEPATH_TIME = 'refresh_stalepath_time'
 REFRESH_MAX_EOR_TIME = 'refresh_max_eor_time'
 
 BGP_CONN_RETRY_TIME = 'bgp_conn_retry_time'
+BGP_SERVER_HOSTS = 'bgp_server_hosts'
 BGP_SERVER_PORT = 'bgp_server_port'
 TCP_CONN_TIMEOUT = 'tcp_conn_timeout'
 MAX_PATH_EXT_RTFILTER_ALL = 'maximum_paths_external_rtfilter_all'
@@ -73,11 +84,24 @@ MAX_PATH_EXT_RTFILTER_ALL = 'maximum_paths_external_rtfilter_all'
 DEFAULT_LABEL_RANGE = (100, 100000)
 DEFAULT_REFRESH_STALEPATH_TIME = 0
 DEFAULT_REFRESH_MAX_EOR_TIME = 0
+DEFAULT_BGP_SERVER_HOSTS = ('0.0.0.0', '::')
 DEFAULT_BGP_SERVER_PORT = 179
 DEFAULT_TCP_CONN_TIMEOUT = 30
 DEFAULT_BGP_CONN_RETRY_TIME = 30
 DEFAULT_MED = 0
 DEFAULT_MAX_PATH_EXT_RTFILTER_ALL = True
+DEFAULT_LOCAL_PREF = 100
+
+
+@validate(name=ALLOW_LOCAL_AS_IN_COUNT)
+def validate_allow_local_as_in_count(count):
+    if not isinstance(count, numbers.Integral):
+        raise ConfigTypeError(desc=('Configuration value for %s has to be '
+                                    'integral type' % ALLOW_LOCAL_AS_IN_COUNT))
+    if count < 0:
+        raise ConfigValueError(desc='Invalid local AS count %s' % count)
+
+    return count
 
 
 @validate(name=LOCAL_AS)
@@ -85,7 +109,7 @@ def validate_local_as(asn):
     if asn is None:
         raise MissingRequiredConf(conf_name=LOCAL_AS)
 
-    if not is_valid_old_asn(asn):
+    if not is_valid_asn(asn):
         raise ConfigValueError(desc='Invalid local_as configuration value: %s'
                                % asn)
     return asn
@@ -102,6 +126,16 @@ def validate_router_id(router_id):
         raise ConfigValueError(desc='Invalid router id %s' % router_id)
 
     return router_id
+
+
+@validate(name=CLUSTER_ID)
+def validate_router_id(cluster_id):
+    if not isinstance(cluster_id, str):
+        raise ConfigTypeError(conf_name=CLUSTER_ID)
+    if not is_valid_ipv4(cluster_id):
+        raise ConfigValueError(desc='Invalid cluster id %s' % cluster_id)
+
+    return cluster_id
 
 
 @validate(name=REFRESH_STALEPATH_TIME)
@@ -129,14 +163,25 @@ def validate_refresh_max_eor_time(rmet):
 @validate(name=LABEL_RANGE)
 def validate_label_range(label_range):
     min_label, max_label = label_range
-    if (not min_label or not max_label
-            or not isinstance(min_label, numbers.Integral)
-            or not isinstance(max_label, numbers.Integral) or min_label < 17
-            or min_label >= max_label):
+    if (not min_label or
+            not max_label or
+            not isinstance(min_label, numbers.Integral) or
+            not isinstance(max_label, numbers.Integral) or min_label < 17 or
+            min_label >= max_label):
         raise ConfigValueError(desc=('Invalid label_range configuration value:'
                                      ' (%s).' % label_range))
 
     return label_range
+
+
+@validate(name=BGP_SERVER_HOSTS)
+def validate_bgp_server_hosts(hosts):
+    for host in hosts:
+        if not ip.valid_ipv4(host) and not ip.valid_ipv6(host):
+            raise ConfigTypeError(desc=('Invalid bgp sever hosts '
+                                        'configuration value %s' % hosts))
+
+    return hosts
 
 
 @validate(name=BGP_SERVER_PORT)
@@ -183,11 +228,20 @@ def validate_bgp_conn_retry_time(bgp_conn_retry_time):
 
 @validate(name=MAX_PATH_EXT_RTFILTER_ALL)
 def validate_max_path_ext_rtfilter_all(max_path_ext_rtfilter_all):
-    if max_path_ext_rtfilter_all not in (True, False):
+    if not isinstance(max_path_ext_rtfilter_all, bool):
         raise ConfigTypeError(desc=('Invalid max_path_ext_rtfilter_all'
                                     ' configuration value %s' %
                                     max_path_ext_rtfilter_all))
     return max_path_ext_rtfilter_all
+
+
+@validate(name=LOCAL_PREF)
+def validate_local_pref(local_pref):
+    if not isinstance(local_pref, numbers.Integral):
+        raise ConfigTypeError(desc=('Invalid local_pref'
+                                    ' configuration value %s' %
+                                    local_pref))
+    return local_pref
 
 
 class CommonConf(BaseConf):
@@ -203,23 +257,30 @@ class CommonConf(BaseConf):
     REQUIRED_SETTINGS = frozenset([ROUTER_ID, LOCAL_AS])
 
     OPTIONAL_SETTINGS = frozenset([REFRESH_STALEPATH_TIME,
-                                   REFRESH_MAX_EOR_TIME,
-                                   LABEL_RANGE, BGP_SERVER_PORT,
+                                   REFRESH_MAX_EOR_TIME, LABEL_RANGE,
+                                   BGP_SERVER_HOSTS, BGP_SERVER_PORT,
                                    TCP_CONN_TIMEOUT,
                                    BGP_CONN_RETRY_TIME,
-                                   MAX_PATH_EXT_RTFILTER_ALL])
+                                   MAX_PATH_EXT_RTFILTER_ALL,
+                                   ALLOW_LOCAL_AS_IN_COUNT,
+                                   CLUSTER_ID,
+                                   LOCAL_PREF])
 
     def __init__(self, **kwargs):
         super(CommonConf, self).__init__(**kwargs)
 
     def _init_opt_settings(self, **kwargs):
         super(CommonConf, self)._init_opt_settings(**kwargs)
+        self._settings[ALLOW_LOCAL_AS_IN_COUNT] = compute_optional_conf(
+            ALLOW_LOCAL_AS_IN_COUNT, 0, **kwargs)
         self._settings[LABEL_RANGE] = compute_optional_conf(
             LABEL_RANGE, DEFAULT_LABEL_RANGE, **kwargs)
         self._settings[REFRESH_STALEPATH_TIME] = compute_optional_conf(
             REFRESH_STALEPATH_TIME, DEFAULT_REFRESH_STALEPATH_TIME, **kwargs)
         self._settings[REFRESH_MAX_EOR_TIME] = compute_optional_conf(
             REFRESH_MAX_EOR_TIME, DEFAULT_REFRESH_MAX_EOR_TIME, **kwargs)
+        self._settings[BGP_SERVER_HOSTS] = compute_optional_conf(
+            BGP_SERVER_HOSTS, DEFAULT_BGP_SERVER_HOSTS, **kwargs)
         self._settings[BGP_SERVER_PORT] = compute_optional_conf(
             BGP_SERVER_PORT, DEFAULT_BGP_SERVER_PORT, **kwargs)
         self._settings[TCP_CONN_TIMEOUT] = compute_optional_conf(
@@ -229,6 +290,10 @@ class CommonConf(BaseConf):
         self._settings[MAX_PATH_EXT_RTFILTER_ALL] = compute_optional_conf(
             MAX_PATH_EXT_RTFILTER_ALL, DEFAULT_MAX_PATH_EXT_RTFILTER_ALL,
             **kwargs)
+        self._settings[CLUSTER_ID] = compute_optional_conf(
+            CLUSTER_ID, kwargs[ROUTER_ID], **kwargs)
+        self._settings[LOCAL_PREF] = compute_optional_conf(
+            LOCAL_PREF, DEFAULT_LOCAL_PREF, **kwargs)
 
     # =========================================================================
     # Required attributes
@@ -245,6 +310,13 @@ class CommonConf(BaseConf):
     # =========================================================================
     # Optional attributes with valid defaults.
     # =========================================================================
+    @property
+    def cluster_id(self):
+        return self._settings[CLUSTER_ID]
+
+    @property
+    def allow_local_as_in_count(self):
+        return self._settings[ALLOW_LOCAL_AS_IN_COUNT]
 
     @property
     def bgp_conn_retry_time(self):
@@ -267,12 +339,20 @@ class CommonConf(BaseConf):
         return self._settings[LABEL_RANGE]
 
     @property
+    def bgp_server_hosts(self):
+        return self._settings[BGP_SERVER_HOSTS]
+
+    @property
     def bgp_server_port(self):
         return self._settings[BGP_SERVER_PORT]
 
     @property
     def max_path_ext_rtfilter_all(self):
         return self._settings[MAX_PATH_EXT_RTFILTER_ALL]
+
+    @property
+    def local_pref(self):
+        return self._settings[LOCAL_PREF]
 
     @classmethod
     def get_opt_settings(self):

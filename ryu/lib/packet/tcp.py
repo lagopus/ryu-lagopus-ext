@@ -13,13 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import six
 import struct
 import logging
 
+import six
+
+from ryu.lib import stringify
 from . import packet_base
 from . import packet_utils
-from ryu.lib import stringify
+from . import bgp
+from . import openflow
+from . import zebra
 
 
 LOG = logging.getLogger(__name__)
@@ -34,6 +38,16 @@ TCP_OPTION_KIND_SACK = 5                  # SACK
 TCP_OPTION_KIND_TIMESTAMPS = 8            # Timestamps
 TCP_OPTION_KIND_USER_TIMEOUT = 28         # User Timeout Option
 TCP_OPTION_KIND_AUTHENTICATION = 29       # TCP Authentication Option (TCP-AO)
+
+TCP_FIN = 0x001
+TCP_SYN = 0x002
+TCP_RST = 0x004
+TCP_PSH = 0x008
+TCP_ACK = 0x010
+TCP_URG = 0x020
+TCP_ECE = 0x040
+TCP_CWR = 0x080
+TCP_NS = 0x100
 
 
 class tcp(packet_base.PacketBase):
@@ -83,6 +97,36 @@ class tcp(packet_base.PacketBase):
     def __len__(self):
         return self.offset * 4
 
+    def has_flags(self, *flags):
+        """Check if flags are set on this packet.
+
+        returns boolean if all passed flags is set
+
+        Example::
+
+            >>> pkt = tcp.tcp(bits=(tcp.TCP_SYN | tcp.TCP_ACK))
+            >>> pkt.has_flags(tcp.TCP_SYN, tcp.TCP_ACK)
+            True
+        """
+
+        mask = sum(flags)
+        return (self.bits & mask) == mask
+
+    @staticmethod
+    def get_payload_type(src_port, dst_port):
+        from ryu.ofproto.ofproto_common import OFP_TCP_PORT, OFP_SSL_PORT_OLD
+        if bgp.TCP_SERVER_PORT in [src_port, dst_port]:
+            return bgp.BGPMessage
+        elif(src_port in [OFP_TCP_PORT, OFP_SSL_PORT_OLD] or
+             dst_port in [OFP_TCP_PORT, OFP_SSL_PORT_OLD]):
+            return openflow.openflow
+        elif src_port == zebra.ZEBRA_PORT:
+            return zebra._ZebraMessageFromZebra
+        elif dst_port == zebra.ZEBRA_PORT:
+            return zebra.ZebraMessage
+        else:
+            return None
+
     @classmethod
     def parser(cls, buf):
         (src_port, dst_port, seq, ack, offset, bits, window_size,
@@ -107,7 +151,7 @@ class tcp(packet_base.PacketBase):
         msg = cls(src_port, dst_port, seq, ack, offset, bits,
                   window_size, csum, urgent, option)
 
-        return msg, None, buf[length:]
+        return msg, cls.get_payload_type(src_port, dst_port), buf[length:]
 
     def serialize(self, payload, prev):
         offset = self.offset << 4
@@ -133,7 +177,7 @@ class tcp(packet_base.PacketBase):
                 if len(h) < offset:
                     h.extend(bytearray(offset - len(h)))
 
-        if 0 == self.offset:
+        if self.offset == 0:
             self.offset = len(h) >> 2
             offset = self.offset << 4
             struct.pack_into('!B', h, 12, offset)

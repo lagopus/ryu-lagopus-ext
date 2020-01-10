@@ -38,6 +38,7 @@ from ryu.lib.packet import igmp
 
 class EventPacketIn(event.EventBase):
     """a PacketIn event class using except IGMP."""
+
     def __init__(self, msg):
         """initialization."""
         super(EventPacketIn, self).__init__()
@@ -573,7 +574,7 @@ class IgmpSnooper(IgmpBase):
             timeout = query.maxresp / 10
 
         self._to_hosts.setdefault(dpid, {})
-        if '0.0.0.0' == query.address:
+        if query.address == '0.0.0.0':
             # general query. reset all reply status.
             for group in self._to_hosts[dpid].values():
                 group['replied'] = False

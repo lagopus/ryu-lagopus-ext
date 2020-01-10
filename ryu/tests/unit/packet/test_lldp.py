@@ -121,7 +121,16 @@ class TestLLDPMandatoryTLV(unittest.TestCase):
         eq_(len(pkt.protocols), 2)
 
         pkt.serialize()
-        eq_(pkt.data, self.data)
+
+        # Note: If ethernet frame is less than 60 bytes length,
+        # ethernet.ethernet() appends padding to the payload.
+        # So, we splits the serialized data to compare.
+        data_len = len(self.data)
+        pkt_data_lldp = pkt.data[:data_len]
+        pkt_data_pad = pkt.data[data_len:]
+        eq_(b'\x00' * (60 - data_len), pkt_data_pad)
+
+        eq_(self.data, pkt_data_lldp)
 
     def test_to_string(self):
         chassis_id = lldp.ChassisID(subtype=lldp.ChassisID.SUB_MAC_ADDRESS,
@@ -218,8 +227,7 @@ class TestLLDPOptionalTLV(unittest.TestCase):
                     + b'\x73\x74\x65\x72\x20\x30\x35\x2f' \
                     + b'\x32\x37\x2f\x30\x35\x20\x30\x34' \
                     + b'\x3a\x35\x33\x3a\x31\x31\x00\x0e' \
-                    + b'\x05\x01\x00\x14\x00\x14\x10\x0e' \
-                    + b'\x07' \
+                    + b'\x04\x00\x14\x00\x14\x10\x0e\x07' \
                     + b'\x06\x00\x01\x30\xf9\xad\xa0\x02' \
                     + b'\x00\x00\x03\xe9\x00\xfe\x07\x00' \
                     + b'\x12\x0f\x02\x07\x01\x00\xfe\x09' \
@@ -265,7 +273,6 @@ class TestLLDPOptionalTLV(unittest.TestCase):
 
         # SystemCapabilities
         eq_(tlvs[6].tlv_type, lldp.LLDP_TLV_SYSTEM_CAPABILITIES)
-        eq_(tlvs[6].subtype, lldp.ChassisID.SUB_CHASSIS_COMPONENT)
         eq_(tlvs[6].system_cap & lldp.SystemCapabilities.CAP_MAC_BRIDGE,
             lldp.SystemCapabilities.CAP_MAC_BRIDGE)
         eq_(tlvs[6].enabled_cap & lldp.SystemCapabilities.CAP_MAC_BRIDGE,
@@ -313,7 +320,6 @@ class TestLLDPOptionalTLV(unittest.TestCase):
             system_description=b'Summit300-48 - Version 7.4e.1 (Build 5) '
                                + b'by Release_Master 05/27/05 04:53:11\x00')
         tlv_system_capabilities = lldp.SystemCapabilities(
-            subtype=lldp.ChassisID.SUB_CHASSIS_COMPONENT,
             system_cap=0x14,
             enabled_cap=0x14)
         tlv_management_address = lldp.ManagementAddress(
@@ -351,7 +357,6 @@ class TestLLDPOptionalTLV(unittest.TestCase):
             system_description=b'Summit300-48 - Version 7.4e.1 (Build 5) '
                                + b'by Release_Master 05/27/05 04:53:11\x00')
         sys_cap = lldp.SystemCapabilities(
-            subtype=lldp.ChassisID.SUB_CHASSIS_COMPONENT,
             system_cap=0x14,
             enabled_cap=0x14)
         man_addr = lldp.ManagementAddress(
@@ -425,8 +430,7 @@ class TestLLDPOptionalTLV(unittest.TestCase):
                                        _sys_desc_str)
 
         # SystemCapabilities string
-        sys_cap_values = {'subtype': lldp.ChassisID.SUB_CHASSIS_COMPONENT,
-                          'system_cap': 0x14,
+        sys_cap_values = {'system_cap': 0x14,
                           'enabled_cap': 0x14,
                           'len': sys_cap.len,
                           'typelen': sys_cap.typelen}
@@ -506,7 +510,6 @@ class TestLLDPOptionalTLV(unittest.TestCase):
             system_description=b'Summit300-48 - Version 7.4e.1 (Build 5) '
                                + b'by Release_Master 05/27/05 04:53:11\x00')
         sys_cap = lldp.SystemCapabilities(
-            subtype=lldp.ChassisID.SUB_CHASSIS_COMPONENT,
             system_cap=0x14,
             enabled_cap=0x14)
         man_addr = lldp.ManagementAddress(

@@ -14,28 +14,80 @@
 # limitations under the License.
 
 import struct
+import logging
+
+import six
+
 from . import packet_base
-from . import packet_utils
+from ryu.lib import type_desc
+
+LOG = logging.getLogger(__name__)
+
+UDP_DST_PORT = 4789
+UDP_DST_PORT_OLD = 8472  # for backward compatibility like Linux
 
 
 class vxlan(packet_base.PacketBase):
-    """
+    """VXLAN (RFC 7348) header encoder/decoder class.
+
+    An instance has the following attributes at least.
+    Most of them are same to the on-wire counterparts but in host byte order.
+    __init__ takes the corresponding args in this order.
+
+    ============== ====================
+    Attribute      Description
+    ============== ====================
+    vni            VXLAN Network Identifier
+    ============== ====================
     """
 
-    _PACK_STR = '!BxxxI'
+    # Note: Python has no format character for 24 bits field.
+    # we use uint32 format character instead and bit-shift at serializing.
+    _PACK_STR = '!II'
     _MIN_LEN = struct.calcsize(_PACK_STR)
 
-    def __init__(self, flags=0x8, vni=0):
+    # VXLAN Header:
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # |R|R|R|R|I|R|R|R|            Reserved                           |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # |                VXLAN Network Identifier (VNI) |   Reserved    |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+    def __init__(self, vni):
         super(vxlan, self).__init__()
-        self.flags = flags
         self.vni = vni
 
     @classmethod
     def parser(cls, buf):
-        (flags, vni) = struct.unpack_from(cls._PACK_STR, buf)
-        vni = vni >> 8
-        msg = cls(flags, vni)
-        return msg, vxlan.get_packet_type(0), buf[msg._MIN_LEN:]
+        (flags_reserved, vni_rserved) = struct.unpack_from(cls._PACK_STR, buf)
+
+        # Check VXLAN flags is valid
+        assert (1 << 3) == (flags_reserved >> 24)
+
+        # Note: To avoid cyclic import, import ethernet module here
+        from ryu.lib.packet import ethernet
+        return cls(vni_rserved >> 8), ethernet.ethernet, buf[cls._MIN_LEN:]
 
     def serialize(self, payload, prev):
-        return struct.pack(vxlan._PACK_STR, self.flags, self.vni << 8)
+        return struct.pack(self._PACK_STR,
+                           1 << (3 + 24), self.vni << 8)
+
+
+def vni_from_bin(buf):
+    """
+    Converts binary representation VNI to integer.
+
+    :param buf: binary representation of VNI.
+    :return: VNI integer.
+    """
+    return type_desc.Int3.to_user(six.binary_type(buf))
+
+
+def vni_to_bin(vni):
+    """
+    Converts integer VNI to binary representation.
+
+    :param vni: integer of VNI
+    :return: binary representation of VNI.
+    """
+    return type_desc.Int3.from_user(vni)

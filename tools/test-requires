@@ -1,8 +1,7 @@
+autopep8
 coverage
 mock
 nose
-pep8
-pylint==0.25.0
+pycodestyle
+pylint
 formencode
-lxml  # OF-Config
-paramiko  # NETCONF, BGP speaker

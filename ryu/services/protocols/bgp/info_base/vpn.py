@@ -19,7 +19,9 @@
 
 import abc
 import logging
+import six
 
+from ryu.lib.packet.bgp import RF_L2_EVPN
 from ryu.services.protocols.bgp.info_base.base import Destination
 from ryu.services.protocols.bgp.info_base.base import NonVrfPathProcessingMixin
 from ryu.services.protocols.bgp.info_base.base import Path
@@ -55,37 +57,42 @@ class VpnTable(Table):
         )
 
 
+@six.add_metaclass(abc.ABCMeta)
 class VpnPath(Path):
-    __metaclass__ = abc.ABCMeta
     ROUTE_FAMILY = None
     VRF_PATH_CLASS = None
     NLRI_CLASS = None
 
     def clone_to_vrf(self, is_withdraw=False):
-        vrf_nlri = self.NLRI_CLASS(self._nlri.prefix)
+        if self.ROUTE_FAMILY == RF_L2_EVPN:
+            # Because NLRI class is the same if the route family is EVPN,
+            # we re-use the NLRI instance.
+            vrf_nlri = self._nlri
+        else:  # self.ROUTE_FAMILY in [RF_IPv4_VPN, RF_IPv46_VPN]
+            vrf_nlri = self.NLRI_CLASS(self._nlri.prefix)
 
         pathattrs = None
         if not is_withdraw:
             pathattrs = self.pathattr_map
 
         vrf_path = self.VRF_PATH_CLASS(
-            self.VRF_PATH_CLASS.create_puid(
+            puid=self.VRF_PATH_CLASS.create_puid(
                 self._nlri.route_dist,
-                self._nlri.prefix
-            ),
-            self.source, vrf_nlri,
-            self.source_version_num,
+                self._nlri.prefix),
+            source=self.source,
+            nlri=vrf_nlri,
+            src_ver_num=self.source_version_num,
             pattrs=pathattrs,
             nexthop=self.nexthop,
             is_withdraw=is_withdraw,
             label_list=self._nlri.label_list)
+
         return vrf_path
 
 
+@six.add_metaclass(abc.ABCMeta)
 class VpnDest(Destination, NonVrfPathProcessingMixin):
     """Base class for VPN destinations."""
-
-    __metaclass__ = abc.ABCMeta
 
     def _best_path_lost(self):
         old_best_path = self._best_path

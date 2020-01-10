@@ -19,7 +19,7 @@ OpenFlow 1.5 definitions.
 """
 
 from ryu.lib import type_desc
-from ryu.ofproto import nx_match
+from ryu.ofproto import nicira_ext
 from ryu.ofproto import ofproto_utils
 from ryu.ofproto import oxm_fields
 from ryu.ofproto import oxs_fields
@@ -386,6 +386,7 @@ def oxm_tlv_header_extract_length(header):
         length = header & 0xff
     return length
 
+
 oxm_types = [
     oxm_fields.OpenFlowBasic('in_port', 0, type_desc.Int4),
     oxm_fields.OpenFlowBasic('in_phy_port', 1, type_desc.Int4),
@@ -431,7 +432,7 @@ oxm_types = [
     oxm_fields.OpenFlowBasic('tcp_flags', 42, type_desc.Int2),
     oxm_fields.OpenFlowBasic('actset_output', 43, type_desc.Int4),
     oxm_fields.OpenFlowBasic('packet_type', 44, type_desc.Int4),
-] + nx_match.oxm_types
+] + nicira_ext.oxm_types
 
 oxm_fields.generate(__name__)
 
@@ -456,6 +457,7 @@ def oxs_tlv_header(field, length):
 
 def oxs_tlv_header_extract_length(header):
     return header & 0xff
+
 
 oxs_types = [
     oxs_fields.OpenFlowBasic('duration', 0, type_desc.Int4Double),

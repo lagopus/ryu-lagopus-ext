@@ -44,6 +44,7 @@ from ryu.services.protocols.bgp.rtconf.neighbors import CONNECT_MODE_ACTIVE
 from ryu.services.protocols.bgp.utils import stats
 from ryu.services.protocols.bgp.bmp import BMPClient
 from ryu.lib import sockopt
+from ryu.lib import ip
 
 
 LOG = logging.getLogger('bgpspeaker.core')
@@ -224,17 +225,17 @@ class CoreService(Factory, Activity):
             self._spawn_activity(peer, self.start_protocol)
 
         # Reactively establish bgp-session with peer by listening on
-        # server port for connection requests.
-        server_addr = (CORE_IP, self._common_config.bgp_server_port)
+        # the given server hosts and port for connection requests.
         waiter = kwargs.pop('waiter')
         waiter.set()
+        self.listen_sockets = {}
         if self._common_config.bgp_server_port != 0:
-            server_thread, sockets = self._listen_tcp(server_addr,
-                                                      self.start_protocol)
-            self.listen_sockets = sockets
-            server_thread.wait()
-        else:
-            self.listen_sockets = {}
+            for host in self._common_config.bgp_server_hosts:
+                server_thread, sockets = self._listen_tcp(
+                    (host, self._common_config.bgp_server_port),
+                    self.start_protocol)
+                self.listen_sockets.update(sockets)
+                server_thread.wait()
         processor_thread.wait()
 
     # ========================================================================
@@ -369,7 +370,7 @@ class CoreService(Factory, Activity):
             sink.enque_outgoing_msg(out_route)
 
     def _set_password(self, address, password):
-        if netaddr.valid_ipv4(address):
+        if ip.valid_ipv4(address):
             family = socket.AF_INET
         else:
             family = socket.AF_INET6
@@ -397,7 +398,7 @@ class CoreService(Factory, Activity):
 
     def on_peer_removed(self, peer):
         if peer._neigh_conf.password:
-            # seting zero length key means deleting the key
+            # setting zero length key means deleting the key
             self._set_password(peer._neigh_conf.ip_address, '')
 
         if peer.rtc_as != self.asn:
@@ -472,7 +473,8 @@ class CoreService(Factory, Activity):
         if (host, port) in self.bmpclients:
             bmpclient = self.bmpclients[(host, port)]
             if bmpclient.started:
-                LOG.warn("bmpclient is already running for %s:%s", host, port)
+                LOG.warning("bmpclient is already running for %s:%s",
+                            host, port)
                 return False
         bmpclient = BMPClient(self, host, port)
         self.bmpclients[(host, port)] = bmpclient
@@ -481,7 +483,7 @@ class CoreService(Factory, Activity):
 
     def stop_bmp(self, host, port):
         if (host, port) not in self.bmpclients:
-            LOG.warn("no bmpclient is running for %s:%s", host, port)
+            LOG.warning("no bmpclient is running for %s:%s", host, port)
             return False
 
         bmpclient = self.bmpclients[(host, port)]

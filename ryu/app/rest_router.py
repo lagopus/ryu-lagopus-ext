@@ -20,9 +20,9 @@ import socket
 import struct
 
 import json
-from webob import Response
 
 from ryu.app.wsgi import ControllerBase
+from ryu.app.wsgi import Response
 from ryu.app.wsgi import WSGIApplication
 from ryu.base import app_manager
 from ryu.controller import dpset
@@ -40,6 +40,7 @@ from ryu.lib.packet import ethernet
 from ryu.lib.packet import icmp
 from ryu.lib.packet import ipv4
 from ryu.lib.packet import packet
+from ryu.lib.packet import packet_base
 from ryu.lib.packet import tcp
 from ryu.lib.packet import udp
 from ryu.lib.packet import vlan
@@ -376,42 +377,45 @@ class RouterController(ControllerBase):
     @rest_command
     def get_data(self, req, switch_id, **_kwargs):
         return self._access_router(switch_id, VLANID_NONE,
-                                   'get_data', req.body)
+                                   'get_data', req)
 
     # GET /router/{switch_id}/{vlan_id}
     @rest_command
     def get_vlan_data(self, req, switch_id, vlan_id, **_kwargs):
         return self._access_router(switch_id, vlan_id,
-                                   'get_data', req.body)
+                                   'get_data', req)
 
     # POST /router/{switch_id}
     @rest_command
     def set_data(self, req, switch_id, **_kwargs):
         return self._access_router(switch_id, VLANID_NONE,
-                                   'set_data', req.body)
+                                   'set_data', req)
 
     # POST /router/{switch_id}/{vlan_id}
     @rest_command
     def set_vlan_data(self, req, switch_id, vlan_id, **_kwargs):
         return self._access_router(switch_id, vlan_id,
-                                   'set_data', req.body)
+                                   'set_data', req)
 
     # DELETE /router/{switch_id}
     @rest_command
     def delete_data(self, req, switch_id, **_kwargs):
         return self._access_router(switch_id, VLANID_NONE,
-                                   'delete_data', req.body)
+                                   'delete_data', req)
 
     # DELETE /router/{switch_id}/{vlan_id}
     @rest_command
     def delete_vlan_data(self, req, switch_id, vlan_id, **_kwargs):
         return self._access_router(switch_id, vlan_id,
-                                   'delete_data', req.body)
+                                   'delete_data', req)
 
-    def _access_router(self, switch_id, vlan_id, func, rest_param):
+    def _access_router(self, switch_id, vlan_id, func, req):
         rest_message = []
         routers = self._get_router(switch_id)
-        param = json.loads(rest_param) if rest_param else {}
+        try:
+            param = req.json if req.body else {}
+        except ValueError:
+            raise SyntaxError('invalid syntax %s', req.body)
         for router in routers.values():
             function = getattr(router, func)
             data = function(vlan_id, param, self.waiters)
@@ -566,7 +570,8 @@ class Router(dict):
         # TODO: Packet library convert to string
         # self.logger.debug('Packet in = %s', str(pkt), self.sw_id)
         header_list = dict((p.protocol_name, p)
-                           for p in pkt.protocols if type(p) != str)
+                           for p in pkt.protocols
+                           if isinstance(p, packet_base.PacketBase))
         if header_list:
             # Check vlan-tag
             vlan_id = VLANID_NONE
@@ -1005,14 +1010,14 @@ class VlanRouter(object):
         else:
             if header_list[ARP].opcode == arp.ARP_REQUEST:
                 # ARP request to router port -> send ARP reply
-                src_mac = header_list[ARP].src_mac
-                dst_mac = self.port_data[in_port].mac
+                src_mac = self.port_data[in_port].mac
+                dst_mac = header_list[ARP].src_mac
                 arp_target_mac = dst_mac
                 output = in_port
                 in_port = self.ofctl.dp.ofproto.OFPP_CONTROLLER
 
                 self.ofctl.send_arp(arp.ARP_REPLY, self.vlan_id,
-                                    dst_mac, src_mac, dst_ip, src_ip,
+                                    src_mac, dst_mac, dst_ip, src_ip,
                                     arp_target_mac, in_port, output)
 
                 log_msg = 'Receive ARP request from [%s] to router port [%s].'

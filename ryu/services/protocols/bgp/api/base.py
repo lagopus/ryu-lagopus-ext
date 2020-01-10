@@ -18,7 +18,8 @@
 
  This API can be used by various services like RPC, CLI, IoC, etc.
 """
-import inspect
+from __future__ import absolute_import
+
 import logging
 import traceback
 
@@ -41,6 +42,21 @@ VPN_LABEL = 'label'
 API_SYM = 'name'
 ORIGIN_RD = 'origin_rd'
 ROUTE_FAMILY = 'route_family'
+EVPN_ROUTE_TYPE = 'route_type'
+EVPN_ESI = 'esi'
+EVPN_ETHERNET_TAG_ID = 'ethernet_tag_id'
+REDUNDANCY_MODE = 'redundancy_mode'
+MAC_ADDR = 'mac_addr'
+IP_ADDR = 'ip_addr'
+IP_PREFIX = 'ip_prefix'
+GW_IP_ADDR = 'gw_ip_addr'
+MPLS_LABELS = 'mpls_labels'
+TUNNEL_TYPE = 'tunnel_type'
+EVPN_VNI = 'vni'
+PMSI_TUNNEL_TYPE = 'pmsi_tunnel_type'
+FLOWSPEC_FAMILY = 'flowspec_family'
+FLOWSPEC_RULES = 'rules'
+FLOWSPEC_ACTIONS = 'actions'
 
 # API call registry
 _CALL_REGISTRY = {}
@@ -79,48 +95,12 @@ def register(**kwargs):
     return decorator
 
 
-def register_method(name):
-    """Decorator for registering methods that provide BGPS public API.
-    """
-    def decorator(func):
-        setattr(func, '__api_method_name__', name)
-        return func
-
-    return decorator
-
-
-def register_class(cls):
-    """Decorator for the registering class whose instance methods provide BGPS
-    public API.
-    """
-    old_init = cls.__init__
-
-    def new_init(self, *args, **kwargs):
-        old_init(self, *args, **kwargs)
-        api_registered_methods = \
-            [(m_name, m) for m_name, m in
-             inspect.getmembers(cls, predicate=inspect.ismethod)
-             if hasattr(m, '__api_method_name__')]
-
-        for _, method in api_registered_methods:
-            api_name = getattr(method, '__api_method_name__')
-
-            def create_wrapper(method):
-                def api_method_wrapper(*args, **kwargs):
-                    return method(self, *args, **kwargs)
-                return api_method_wrapper
-
-            register(name=api_name)(create_wrapper(method))
-
-    cls.__init__ = new_init
-    return cls
-
-
 class RegisterWithArgChecks(object):
     """Decorator for registering API functions.
 
     Does some argument checking and validation of required arguments.
     """
+
     def __init__(self, name, req_args=None, opt_args=None):
         self._name = name
         if not req_args:
@@ -144,6 +124,8 @@ class RegisterWithArgChecks(object):
             2) no extra/un-known arguments are passed
             3) checks if validator for required arguments is available
             4) validates required arguments
+            5) if validator for optional arguments is registered,
+               validates optional arguments.
             Raises exception if no validator can be found for required args.
             """
             # Check if we are missing arguments.
@@ -174,8 +156,8 @@ class RegisterWithArgChecks(object):
                 # Validate required value.
                 validator = get_validator(req_arg)
                 if not validator:
-                    raise ValueError('No validator registered for function %s'
-                                     ' and arg. %s' % (func, req_arg))
+                    raise ValueError('No validator registered for function=%s'
+                                     ' and arg=%s' % (func, req_arg))
                 validator(req_value)
                 req_values.append(req_value)
 
@@ -183,6 +165,12 @@ class RegisterWithArgChecks(object):
             opt_items = {}
             for opt_arg, opt_value in kwargs.items():
                 if opt_arg in self._opt_args:
+                    # Validate optional value.
+                    # Note: If no validator registered for optional value,
+                    # skips validation.
+                    validator = get_validator(opt_arg)
+                    if validator:
+                        validator(opt_value)
                     opt_items[opt_arg] = opt_value
 
             # Call actual function
@@ -208,7 +196,7 @@ def call(symbol, **kwargs):
     LOG.info("API method %s called with args: %s", symbol, str(kwargs))
 
     # TODO(PH, JK) improve the way api function modules are loaded
-    import all  # noqa
+    from . import all  # noqa
     if not is_call_registered(symbol):
         message = 'Did not find any method registered by symbol %s' % symbol
         raise MethodNotFound(message)

@@ -24,6 +24,7 @@ from . import ipv4
 from . import ipv6
 from . import ether_types as ether
 from ryu.lib import addrconv
+from ryu.lib.pack_utils import msg_pack_into
 
 
 class ethernet(packet_base.PacketBase):
@@ -44,6 +45,7 @@ class ethernet(packet_base.PacketBase):
 
     _PACK_STR = '!6s6sH'
     _MIN_LEN = struct.calcsize(_PACK_STR)
+    _MIN_PAYLOAD_LEN = 46
     _TYPE = {
         'ascii': [
             'src', 'dst'
@@ -66,6 +68,11 @@ class ethernet(packet_base.PacketBase):
                 buf[ethernet._MIN_LEN:])
 
     def serialize(self, payload, prev):
+        # Append padding if the payload is less than 46 bytes long
+        pad_len = self._MIN_PAYLOAD_LEN - len(payload)
+        if pad_len > 0:
+            payload.extend(b'\x00' * pad_len)
+
         return struct.pack(ethernet._PACK_STR,
                            addrconv.mac.text_to_bin(self.dst),
                            addrconv.mac.text_to_bin(self.src),

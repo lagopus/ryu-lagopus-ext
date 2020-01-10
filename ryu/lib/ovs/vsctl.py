@@ -14,32 +14,74 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+``ovs-vsctl`` command like library to speak OVSDB protocol
+"""
 
 from __future__ import print_function
 
-import itertools
 import logging
 import operator
 import os
-import six
+import re
 import sys
 import weakref
 
-import ryu.contrib
-ryu.contrib.update_module_path()
+import six
 
 import ovs.db.data
+import ovs.db.parser
+import ovs.db.schema
 import ovs.db.types
 import ovs.poller
-from ovs import (jsonrpc,
-                 ovsuuid,
-                 stream)
+import ovs.json
+from ovs import jsonrpc
+from ovs import ovsuuid
+from ovs import stream
 from ovs.db import idl
 
 from ryu.lib import hub
+from ryu.lib import ip
 from ryu.lib.ovs import vswitch_idl
+from ryu.lib.stringify import StringifyMixin
+
 
 LOG = logging.getLogger(__name__)       # use ovs.vlog?
+
+
+def valid_ovsdb_addr(addr):
+    """
+    Returns True if the given addr is valid OVSDB server address, otherwise
+    False.
+
+    The valid formats are:
+
+    - ``unix:file``
+    - ``tcp:ip:port``
+    - ``ssl:ip:port``
+
+    If ip is IPv6 address, wrap ip with brackets (e.g., ssl:[::1]:6640).
+
+    :param addr: str value of OVSDB server address.
+    :return: True if valid, otherwise False.
+    """
+    # Assumes Unix socket format: "unix:file"
+    m = re.match(r'unix:(\S+)', addr)
+    if m:
+        file = m.group(1)
+        return os.path.isfile(file)
+    # Assumes TCP/SSL socket format: "tcp:ip:port" or "ssl:ip:port"
+    m = re.match(r'(tcp|ssl):(\S+):(\d+)', addr)
+    if m:
+        address = m.group(2)
+        port = m.group(3)
+        if '[' in address:
+            address = address.strip('[').strip(']')
+            return ip.valid_ipv6(address) and port.isdigit()
+        else:
+            return ip.valid_ipv4(address) and port.isdigit()
+    # Assumes invalid format or unsupported type
+    return False
 
 
 # for debug
@@ -124,8 +166,8 @@ def datum_from_string(type_, value_string, symtab=None):
 
 def ifind(pred, seq):
     try:
-        return next(filter(pred, seq))
-    except StopIteration:
+        return [i for i in seq if pred(i)][0]
+    except IndexError:
         return None
 
 
@@ -264,8 +306,13 @@ class VSCtlContext(object):
 
     def add_port_to_cache(self, vsctl_bridge_parent, ovsrec_port):
         tag = getattr(ovsrec_port, vswitch_idl.OVSREC_PORT_COL_TAG, None)
-        if (tag is not None and tag >= 0 and tag < 4096):
-            vlan_bridge = vsctl_bridge_parent.find_vlan_bridge()
+        if isinstance(tag, list):
+            if len(tag) == 0:
+                tag = 0
+            else:
+                tag = tag[0]
+        if tag is not None and 0 <= tag < 4096:
+            vlan_bridge = vsctl_bridge_parent.find_vlan_bridge(tag)
             if vlan_bridge:
                 vsctl_bridge_parent = vlan_bridge
 
@@ -312,8 +359,13 @@ class VSCtlContext(object):
 
     @staticmethod
     def port_is_fake_bridge(ovsrec_port):
-        return (ovsrec_port.fake_bridge and
-                ovsrec_port.tag >= 0 and ovsrec_port.tag <= 4095)
+        tag = ovsrec_port.tag
+        if isinstance(tag, list):
+            if len(tag) == 0:
+                tag = 0
+            else:
+                tag = tag[0]
+        return ovsrec_port.fake_bridge and 0 <= tag <= 4095
 
     def _populate_cache(self, ovsrec_bridges):
         if self.cache_valid:
@@ -325,7 +377,8 @@ class VSCtlContext(object):
         for ovsrec_bridge in ovsrec_bridges.rows.values():
             name = ovsrec_bridge.name
             if name in bridges:
-                LOG.warn('%s: database contains duplicate bridge name', name)
+                LOG.warning('%s: database contains duplicate bridge name',
+                            name)
             bridges.add(name)
             vsctl_bridge = self.add_bridge_to_cache(ovsrec_bridge, name,
                                                     None, 0)
@@ -356,10 +409,10 @@ class VSCtlContext(object):
                 vsctl_port = self.ports.get(port_name)
                 if vsctl_port:
                     if ovsrec_port == vsctl_port.port_cfg:
-                        LOG.warn('%s: vsctl_port is in multiple bridges '
-                                 '(%s and %s)',
-                                 port_name, vsctl_bridge.name,
-                                 vsctl_port.br.name)
+                        LOG.warning('%s: vsctl_port is in multiple bridges '
+                                    '(%s and %s)',
+                                    port_name, vsctl_bridge.name,
+                                    vsctl_port.br.name)
                     else:
                         LOG.error('%s: database contains duplicate '
                                   'vsctl_port name',
@@ -378,7 +431,7 @@ class VSCtlContext(object):
                     iface = self.ifaces.get(ovsrec_iface.name)
                     if iface:
                         if ovsrec_iface == iface.iface_cfg:
-                            LOG.warn(
+                            LOG.warning(
                                 '%s: interface is in multiple ports '
                                 '(%s and %s)',
                                 ovsrec_iface.name,
@@ -465,7 +518,8 @@ class VSCtlContext(object):
             ovsrec_qos = qos[0]
         ovsrec_qos.type = type
         if max_rate is not None:
-            self.set_column(ovsrec_qos, 'other_config', 'max-rate', max_rate)
+            value_json = ['map', [['max-rate', max_rate]]]
+            self.set_column(ovsrec_qos, 'other_config', value_json)
         self.add_qos_to_cache(vsctl_port, [ovsrec_qos])
         return ovsrec_qos
 
@@ -479,13 +533,13 @@ class VSCtlContext(object):
             ovsrec_queue = self.txn.insert(
                 self.txn.idl.tables[vswitch_idl.OVSREC_TABLE_QUEUE])
         if max_rate is not None:
-            self.set_column(ovsrec_queue, 'other_config',
-                            'max-rate', max_rate)
+            value_json = ['map', [['max-rate', max_rate]]]
+            self.add_column(ovsrec_queue, 'other_config', value_json)
         if min_rate is not None:
-            self.set_column(ovsrec_queue, 'other_config',
-                            'min-rate', min_rate)
-        self.set_column(ovsrec_qos, 'queues', queue_id,
-                        ['uuid', str(ovsrec_queue.uuid)])
+            value_json = ['map', [['min-rate', min_rate]]]
+            self.add_column(ovsrec_queue, 'other_config', value_json)
+        value_json = ['map', [[queue_id, ['uuid', str(ovsrec_queue.uuid)]]]]
+        self.add_column(ovsrec_qos, 'queues', value_json)
         self.add_queue_to_cache(vsctl_qos, ovsrec_queue)
         return ovsrec_queue
 
@@ -569,8 +623,8 @@ class VSCtlContext(object):
     def add_port(self, br_name, port_name, may_exist, fake_iface,
                  iface_names, settings=None):
         """
-        :type settings: list of (column, key, value_json)
-                                where column and key are str,
+        :type settings: list of (column, value_json)
+                                where column is str,
                                       value_json is json that is represented
                                       by Datum.to_json()
         """
@@ -585,8 +639,8 @@ class VSCtlContext(object):
                                  vsctl_port.port_cfg.interfaces)
                 if vsctl_port.bridge().name != br_name:
                     vsctl_fatal('"%s" but %s is actually attached to '
-                                'vsctl_bridge %s',
-                                br_name, port_name, vsctl_port.bridge().name)
+                                'vsctl_bridge %s' %
+                                (br_name, port_name, vsctl_port.bridge().name))
                 if want_names != have_names:
                     want_names_string = ','.join(want_names)
                     have_names_string = ','.join(have_names)
@@ -617,10 +671,9 @@ class VSCtlContext(object):
         if vsctl_bridge.parent:
             tag = vsctl_bridge.vlan
             ovsrec_port.tag = tag
-        for setting in settings:
+        for column, value in settings:
             # TODO:XXX self.symtab:
-            column, key, value = setting
-            self.set_column(ovsrec_port, column, key, value)
+            self.set_column(ovsrec_port, column, value)
 
         if vsctl_bridge.parent:
             ovsrec_bridge = vsctl_bridge.parent.br_cfg
@@ -703,50 +756,118 @@ class VSCtlContext(object):
         self.invalidate_cache()
 
     @staticmethod
+    def parse_column_key(setting_string):
+        """
+        Parses 'setting_string' as str formatted in <column>[:<key>]
+        and returns str type 'column' and 'key'
+        """
+        if ':' in setting_string:
+            # splits <column>:<key> into <column> and <key>
+            column, key = setting_string.split(':', 1)
+        else:
+            # stores <column> and <value>=None
+            column = setting_string
+            key = None
+
+        return column, key
+
+    @staticmethod
     def parse_column_key_value(table_schema, setting_string):
         """
-        parse <column>[:<key>]=<value>
+        Parses 'setting_string' as str formatted in <column>[:<key>]=<value>
+        and returns str type 'column' and json formatted 'value'
         """
-        column_value = setting_string.split('=', 1)
-        if len(column_value) == 1:
-            column = column_value[0]
+        if ':' in setting_string:
+            # splits <column>:<key>=<value> into <column> and <key>=<value>
+            column, value = setting_string.split(':', 1)
+        elif '=' in setting_string:
+            # splits <column>=<value> into <column> and <value>
+            column, value = setting_string.split('=', 1)
+        else:
+            # stores <column> and <value>=None
+            column = setting_string
             value = None
-        else:
-            column, value = column_value
 
-        if ':' in column:
-            column, key = column.split(':', 1)
-        else:
-            key = None
         if value is not None:
-            LOG.debug("columns %s", list(table_schema.columns.keys()))
             type_ = table_schema.columns[column].type
             value = datum_from_string(type_, value)
-            LOG.debug("column %s value %s", column, value)
 
-        return (column, key, value)
+        return column, value
 
-    def set_column(self, ovsrec_row, column, key, value_json):
+    def get_column(self, ovsrec_row, column, key=None, if_exists=False):
+        value = getattr(ovsrec_row, column, None)
+        if isinstance(value, dict) and key is not None:
+            value = value.get(key, None)
+            column = '%s:%s' % (column, key)
+
+        if value is None:
+            if if_exists:
+                return None
+            vsctl_fatal('%s does not contain a column whose name matches "%s"'
+                        % (ovsrec_row._table.name, column))
+
+        return value
+
+    def _pre_mod_column(self, ovsrec_row, column, value_json):
         if column not in ovsrec_row._table.columns:
             vsctl_fatal('%s does not contain a column whose name matches "%s"'
                         % (ovsrec_row._table.name, column))
 
         column_schema = ovsrec_row._table.columns[column]
-        if key is not None:
-            value_json = ['map', [[key, value_json]]]
-            if column_schema.type.value.type == ovs.db.types.VoidType:
-                vsctl_fatal('cannot specify key to set for non-map column %s' %
-                            column)
-            datum = ovs.db.data.Datum.from_json(column_schema.type, value_json,
-                                                self.symtab)
+        datum = ovs.db.data.Datum.from_json(
+            column_schema.type, value_json, self.symtab)
+        return datum.to_python(ovs.db.idl._uuid_to_row)
+
+    def set_column(self, ovsrec_row, column, value_json):
+        column_schema = ovsrec_row._table.columns[column]
+        datum = self._pre_mod_column(ovsrec_row, column, value_json)
+
+        if column_schema.type.is_map():
             values = getattr(ovsrec_row, column, {})
-            values.update(datum.to_python(ovs.db.idl._uuid_to_row))
+            values.update(datum)
+        else:
+            values = datum
+
+        setattr(ovsrec_row, column, values)
+
+    def add_column(self, ovsrec_row, column, value_json):
+        column_schema = ovsrec_row._table.columns[column]
+        datum = self._pre_mod_column(ovsrec_row, column, value_json)
+
+        if column_schema.type.is_map():
+            values = getattr(ovsrec_row, column, {})
+            values.update(datum)
+        elif column_schema.type.is_set():
+            values = getattr(ovsrec_row, column, [])
+            values.extend(datum)
+        else:
+            values = datum
+
+        setattr(ovsrec_row, column, values)
+
+    def remove_column(self, ovsrec_row, column, value_json):
+        column_schema = ovsrec_row._table.columns[column]
+        datum = self._pre_mod_column(ovsrec_row, column, value_json)
+
+        if column_schema.type.is_map():
+            values = getattr(ovsrec_row, column, {})
+            for datum_key, datum_value in datum.items():
+                v = values.get(datum_key, None)
+                if v == datum_value:
+                    values.pop(datum_key)
+            setattr(ovsrec_row, column, values)
+        elif column_schema.type.is_set():
+            values = getattr(ovsrec_row, column, [])
+            for d in datum:
+                if d in values:
+                    values.remove(d)
             setattr(ovsrec_row, column, values)
         else:
-            datum = ovs.db.data.Datum.from_json(column_schema.type, value_json,
-                                                self.symtab)
-            setattr(ovsrec_row, column,
-                    datum.to_python(ovs.db.idl._uuid_to_row))
+            values = getattr(ovsrec_row, column, None)
+            default = ovs.db.data.Datum.default(column_schema.type)
+            default = default.to_python(ovs.db.idl._uuid_to_row).to_json()
+            if values == datum:
+                setattr(ovsrec_row, column, default)
 
     def _get_row_by_id(self, table_name, vsctl_row_id, record_id):
         if not vsctl_row_id.table:
@@ -764,9 +885,9 @@ class VSCtlContext(object):
             for ovsrec_row in self.idl.tables[
                     vsctl_row_id.table].rows.values():
                 name = getattr(ovsrec_row, vsctl_row_id.name_column)
-                assert type(name) in (list, str, six.text_type)
-                if type(name) != list and name == record_id:
-                    if (referrer):
+                assert isinstance(name, (list, str, six.text_type))
+                if not isinstance(name, list) and name == record_id:
+                    if referrer:
                         vsctl_fatal('multiple rows in %s match "%s"' %
                                     (table_name, record_id))
                     referrer = ovsrec_row
@@ -782,7 +903,7 @@ class VSCtlContext(object):
             uuid_ = referrer._data[vsctl_row_id.uuid_column]
             assert uuid_.type.key.type == ovs.db.types.UuidType
             assert uuid_.type.value is None
-            assert type(uuid) == list
+            assert isinstance(uuid, list)
 
             if len(uuid) == 1:
                 final = uuid[0]
@@ -840,7 +961,35 @@ class _VSCtlTable(object):
         self.row_ids = vsctl_row_id_list
 
 
-class VSCtlCommand(object):
+class VSCtlCommand(StringifyMixin):
+    """
+    Class to describe artgumens similar to those of ``ovs-vsctl`` command.
+
+    ``command`` specifies the command of ``ovs-vsctl``.
+
+    ``args`` specifies a list or tuple of arguments for the given command.
+
+    ``options`` specifies a list or tuple of options for the given command.
+    Please note that NOT all options of ``ovs-vsctl`` are supported.
+    For example, ``--id`` option is not yet supported.
+    This class supports the followings.
+
+    ================= =========================================================
+    Option            Description
+    ================= =========================================================
+    ``--may-exist``   Does nothing when the given port already exists.
+                      The supported commands are ``add-port`` and
+                      ``add-bond``.
+    ``--fake-iface``  Creates a port as a fake interface.
+                      The supported command is ``add-bond``.
+    ``--must-exist``  Raises exception if the given port does not exist.
+                      The supported command is ``del-port``.
+    ``--with-iface``  Takes effect to the interface which has the same name.
+                      The supported command is ``del-port``.
+    ``--if-exists``   Ignores exception when not found.
+                      The supported command is ``get``.
+    ================= =========================================================
+    """
 
     def __init__(self, command, args=None, options=None):
         super(VSCtlCommand, self).__init__()
@@ -860,6 +1009,13 @@ class VSCtlCommand(object):
 
 
 class VSCtl(object):
+    """
+    A class to describe an Open vSwitch instance.
+
+    ``remote`` specifies the address of the OVS instance.
+    :py:mod:`ryu.lib.ovs.vsctl.valid_ovsdb_addr` is a convenient function to
+    validate this address.
+    """
 
     def _reset(self):
         self.schema_helper = None
@@ -935,18 +1091,17 @@ class VSCtl(object):
             ctx.done()
 
     def _do_vsctl(self, idl_, commands):
-        txn = idl.Transaction(idl_)
-        self.txn = txn
+        self.txn = idl.Transaction(idl_)
         if self.dry_run:
-            txn.dry_run = True
+            self.txn.dry_run = True
 
-        txn.add_comment('ovs-vsctl')  # TODO:XXX add operation name. args
+        self.txn.add_comment('ovs-vsctl')  # TODO:XXX add operation name. args
         ovs_rows = idl_.tables[vswitch_idl.OVSREC_TABLE_OPEN_VSWITCH].rows
         if ovs_rows:
             ovs_ = list(ovs_rows.values())[0]
         else:
             # XXX add verification that table is empty
-            ovs_ = txn.insert(
+            ovs_ = self.txn.insert(
                 idl_.tables[vswitch_idl.OVSREC_TABLE_OPEN_VSWITCH])
 
         if self.wait_for_reload:
@@ -954,7 +1109,7 @@ class VSCtl(object):
 
         # TODO:XXX
         # symtab = ovsdb_symbol_table_create()
-        ctx = VSCtlContext(idl_, txn, ovs_)
+        ctx = VSCtlContext(idl_, self.txn, ovs_)
         for command in commands:
             if not command._run:
                 continue
@@ -966,10 +1121,10 @@ class VSCtl(object):
 
         # TODO:XXX check if created symbols are really created, referenced.
 
-        status = txn.commit_block()
+        status = self.txn.commit_block()
         next_cfg = 0
         if self.wait_for_reload and status == idl.Transaction.SUCCESS:
-            next_cfg = txn.get_increment_new_value()
+            next_cfg = self.txn.get_increment_new_value()
 
         # TODO:XXX
         # if status in (idl.Transaction.UNCHANGED, idl.Transaction.SUCCESS):
@@ -982,16 +1137,15 @@ class VSCtl(object):
 
         txn_ = self.txn
         self.txn = None
-        txn = None
 
         if status in (idl.Transaction.UNCOMMITTED, idl.Transaction.INCOMPLETE):
             not_reached()
         elif status == idl.Transaction.ABORTED:
             vsctl_fatal('transaction aborted')
         elif status == idl.Transaction.UNCHANGED:
-            LOG.info('unchanged')
+            LOG.debug('unchanged')
         elif status == idl.Transaction.SUCCESS:
-            LOG.info('success')
+            LOG.debug('success')
         elif status == idl.Transaction.TRY_AGAIN:
             return False
         elif status == idl.Transaction.ERROR:
@@ -1004,7 +1158,7 @@ class VSCtl(object):
         if self.wait_for_reload and status != idl.Transaction.UNCHANGED:
             while True:
                 idl_.run()
-                if (ovs_.cur_cfg >= next_cfg):
+                if ovs_.cur_cfg >= next_cfg:
                     break
                 self._idl_block(idl_)
 
@@ -1043,51 +1197,70 @@ class VSCtl(object):
             # Open vSwitch commands.
             'init': (None, self._cmd_init),
             'show': (self._pre_cmd_show, self._cmd_show),
+            # 'emer-reset':
 
             # Bridge commands.
             'add-br': (self._pre_add_br, self._cmd_add_br),
             'del-br': (self._pre_get_info, self._cmd_del_br),
             'list-br': (self._pre_get_info, self._cmd_list_br),
+            'br-exists': (self._pre_get_info, self._cmd_br_exists),
+            'br-to-vlan': (self._pre_get_info, self._cmd_br_to_vlan),
+            'br-to-parent': (self._pre_get_info, self._cmd_br_to_parent),
+            'br-set-external-id': (self._pre_cmd_br_set_external_id,
+                                   self._cmd_br_set_external_id),
+            'br-get-external-id': (self._pre_cmd_br_get_external_id,
+                                   self._cmd_br_get_external_id),
 
             # Port. commands
             'list-ports': (self._pre_get_info, self._cmd_list_ports),
             'add-port': (self._pre_cmd_add_port, self._cmd_add_port),
+            'add-bond': (self._pre_cmd_add_bond, self._cmd_add_bond),
             'del-port': (self._pre_get_info, self._cmd_del_port),
-            # 'add-bond':
-            # 'port-to-br':
+            'port-to-br': (self._pre_get_info, self._cmd_port_to_br),
 
             # Interface commands.
             'list-ifaces': (self._pre_get_info, self._cmd_list_ifaces),
-            # 'iface-to-br':
+            'iface-to-br': (self._pre_get_info, self._cmd_iface_to_br),
 
             # Controller commands.
             'get-controller': (self._pre_controller, self._cmd_get_controller),
             'del-controller': (self._pre_controller, self._cmd_del_controller),
             'set-controller': (self._pre_controller, self._cmd_set_controller),
-            # 'get-fail-mode':
-            # 'del-fail-mode':
-            # 'set-fail-mode':
+            'get-fail-mode': (self._pre_fail_mode, self._cmd_get_fail_mode),
+            'del-fail-mode': (self._pre_fail_mode, self._cmd_del_fail_mode),
+            'set-fail-mode': (self._pre_fail_mode, self._cmd_set_fail_mode),
 
             # Manager commands.
             # 'get-manager':
             # 'del-manager':
             # 'set-manager':
 
+            # SSL commands.
+            # 'get-ssl':
+            # 'del-ssl':
+            # 'set-ssl':
+
+            # Auto Attach commands.
+            # 'add-aa-mapping':
+            # 'del-aa-mapping':
+            # 'get-aa-mapping':
+
             # Switch commands.
             # 'emer-reset':
 
             # Database commands.
-            # 'comment':
-            'get': (self._pre_cmd_get, self._cmd_get),
-            # 'list':
+            'list': (self._pre_cmd_list, self._cmd_list),
             'find': (self._pre_cmd_find, self._cmd_find),
+            'get': (self._pre_cmd_get, self._cmd_get),
             'set': (self._pre_cmd_set, self._cmd_set),
-            # 'add':
+            'add': (self._pre_cmd_add, self._cmd_add),
+            'remove': (self._pre_cmd_remove, self._cmd_remove),
             'clear': (self._pre_cmd_clear, self._cmd_clear),
             # 'create':
             # 'destroy':
             # 'wait-until':
 
+            # Utility commands. (No corresponding command in ovs-vsctl)
             'set-qos': (self._pre_cmd_set_qos, self._cmd_set_qos),
             'set-queue': (self._pre_cmd_set_queue, self._cmd_set_queue),
             'del-qos': (self._pre_get_info, self._cmd_del_qos),
@@ -1102,13 +1275,27 @@ class VSCtl(object):
         self._do_main(commands)
 
     def run_command(self, commands, timeout_sec=None, exception=None):
+        """
+        Executes the given commands and sends OVSDB messages.
+
+        ``commands`` must be a list of
+        :py:mod:`ryu.lib.ovs.vsctl.VSCtlCommand`.
+
+        If ``timeout_sec`` is specified, raises exception after the given
+        timeout [sec]. Additionally, if ``exception`` is specified, this
+        function will wraps exception using the given exception class.
+
+        Retruns ``None`` but fills ``result`` attribute for each command
+        instance.
+        """
         if timeout_sec is None:
             self._run_command(commands)
         else:
             with hub.Timeout(timeout_sec, exception):
                 self._run_command(commands)
 
-    # commands
+    # Open vSwitch commands:
+
     def _cmd_init(self, _ctx, _command):
         # nothing. Just check connection to ovsdb
         pass
@@ -1190,7 +1377,7 @@ class VSCtl(object):
         for column in show.columns:
             datum = row._data[column]
             key = datum.type.key
-            if (key.type == ovs.db.types.UuidType and key.ref_table_name):
+            if key.type == ovs.db.types.UuidType and key.ref_table_name:
                 ref_show = VSCtl._cmd_show_find_table_by_name(
                     key.ref_table_name)
                 if ref_show:
@@ -1213,6 +1400,8 @@ class VSCtl(object):
                 self._CMD_SHOW_TABLES[0].table].rows.values():
             output = self._cmd_show_row(ctx, row, 0)
             command.result = output
+
+    # Bridge commands:
 
     def _pre_get_info(self, _ctx, _command):
         schema_helper = self.schema_helper
@@ -1257,9 +1446,10 @@ class VSCtl(object):
 
     def _cmd_add_br(self, ctx, command):
         br_name = command.args[0]
+        parent_name = None
+        vlan = 0
         if len(command.args) == 1:
-            parent_name = None
-            vlan = 0
+            pass
         elif len(command.args) == 3:
             parent_name = command.args[1]
             vlan = int(command.args[2])
@@ -1279,6 +1469,101 @@ class VSCtl(object):
     def _cmd_del_br(self, ctx, command):
         br_name = command.args[0]
         self._del_br(ctx, br_name)
+
+    def _br_exists(self, ctx, br_name):
+        ctx.populate_cache()
+        br = ctx.find_bridge(br_name, must_exist=False)
+        return br is not None
+
+    def _cmd_br_exists(self, ctx, command):
+        br_name = command.args[0]
+        command.result = self._br_exists(ctx, br_name)
+
+    def _br_to_vlan(self, ctx, br_name):
+        ctx.populate_cache()
+        br = ctx.find_bridge(br_name, must_exist=True)
+        vlan = br.vlan
+        if isinstance(vlan, list):
+            if len(vlan) == 0:
+                vlan = 0
+            else:
+                vlan = vlan[0]
+        return vlan
+
+    def _cmd_br_to_vlan(self, ctx, command):
+        br_name = command.args[0]
+        command.result = self._br_to_vlan(ctx, br_name)
+
+    def _br_to_parent(self, ctx, br_name):
+        ctx.populate_cache()
+        br = ctx.find_bridge(br_name, must_exist=True)
+        return br if br.parent is None else br.parent
+
+    def _cmd_br_to_parent(self, ctx, command):
+        br_name = command.args[0]
+        command.result = self._br_to_parent(ctx, br_name)
+
+    def _pre_cmd_br_set_external_id(self, ctx, _command):
+        table_name = vswitch_idl.OVSREC_TABLE_BRIDGE
+        columns = [vswitch_idl.OVSREC_BRIDGE_COL_EXTERNAL_IDS]
+        self._pre_mod_columns(ctx, table_name, columns)
+
+    def _br_add_external_id(self, ctx, br_name, key, value):
+        table_name = vswitch_idl.OVSREC_TABLE_BRIDGE
+        column = vswitch_idl.OVSREC_BRIDGE_COL_EXTERNAL_IDS
+        vsctl_table = self._get_table(table_name)
+        ovsrec_row = ctx.must_get_row(vsctl_table, br_name)
+
+        value_json = ['map', [[key, value]]]
+        ctx.add_column(ovsrec_row, column, value_json)
+        ctx.invalidate_cache()
+
+    def _br_clear_external_id(self, ctx, br_name, key):
+        table_name = vswitch_idl.OVSREC_TABLE_BRIDGE
+        column = vswitch_idl.OVSREC_BRIDGE_COL_EXTERNAL_IDS
+        vsctl_table = self._get_table(table_name)
+        ovsrec_row = ctx.must_get_row(vsctl_table, br_name)
+
+        values = getattr(ovsrec_row, column, {})
+        values.pop(key, None)
+        setattr(ovsrec_row, column, values)
+        ctx.invalidate_cache()
+
+    def _cmd_br_set_external_id(self, ctx, command):
+        br_name = command.args[0]
+        key = command.args[1]
+        if len(command.args) > 2:
+            self._br_add_external_id(ctx, br_name, key, command.args[2])
+        else:
+            self._br_clear_external_id(ctx, br_name, key)
+
+    def _pre_cmd_br_get_external_id(self, ctx, _command):
+        table_name = vswitch_idl.OVSREC_TABLE_BRIDGE
+        columns = [vswitch_idl.OVSREC_BRIDGE_COL_EXTERNAL_IDS]
+        self._pre_get_columns(ctx, table_name, columns)
+
+    def _br_get_external_id_value(self, ctx, br_name, key):
+        external_id = self._br_get_external_id_list(ctx, br_name)
+
+        return external_id.get(key, None)
+
+    def _br_get_external_id_list(self, ctx, br_name):
+        table_name = vswitch_idl.OVSREC_TABLE_BRIDGE
+        column = vswitch_idl.OVSREC_BRIDGE_COL_EXTERNAL_IDS
+        vsctl_table = self._get_table(table_name)
+        ovsrec_row = ctx.must_get_row(vsctl_table, br_name)
+
+        return ctx.get_column(ovsrec_row, column)
+
+    def _cmd_br_get_external_id(self, ctx, command):
+        br_name = command.args[0]
+        if len(command.args) > 1:
+            command.result = self._br_get_external_id_value(ctx, br_name,
+                                                            command.args[1])
+        else:
+            command.result = self._br_get_external_id_list(ctx, br_name)
+
+    # Port commands:
 
     def _list_ports(self, ctx, br_name):
         ctx.populate_cache()
@@ -1308,22 +1593,58 @@ class VSCtl(object):
     def _pre_cmd_add_port(self, ctx, command):
         self._pre_get_info(ctx, command)
 
-        columns = [ctx.parse_column_key_value(
-            self.schema.tables[vswitch_idl.OVSREC_TABLE_PORT], setting)[0]
+        columns = [
+            ctx.parse_column_key_value(
+                self.schema.tables[vswitch_idl.OVSREC_TABLE_PORT], setting)[0]
             for setting in command.args[2:]]
+
+        self._pre_add_port(ctx, columns)
+
+    def _pre_cmd_add_bond(self, ctx, command):
+        self._pre_get_info(ctx, command)
+
+        if len(command.args) < 3:
+            vsctl_fatal('this command requires at least 3 arguments')
+
+        columns = [
+            ctx.parse_column_key_value(
+                self.schema.tables[vswitch_idl.OVSREC_TABLE_PORT], setting)[0]
+            for setting in command.args[3:]]
+
         self._pre_add_port(ctx, columns)
 
     def _cmd_add_port(self, ctx, command):
-        may_exist = command.has_option('--may_exist')
+        # '--may_exist' is a typo but for backword compatibility
+        may_exist = (command.has_option('--may_exist')
+                     or command.has_option('--may-exist'))
 
         br_name = command.args[0]
         port_name = command.args[1]
         iface_names = [command.args[1]]
-        settings = [ctx.parse_column_key_value(
-            self.schema.tables[vswitch_idl.OVSREC_TABLE_PORT], setting)
+        settings = [
+            ctx.parse_column_key_value(
+                self.schema.tables[vswitch_idl.OVSREC_TABLE_PORT], setting)
             for setting in command.args[2:]]
+
         ctx.add_port(br_name, port_name, may_exist,
                      False, iface_names, settings)
+
+    def _cmd_add_bond(self, ctx, command):
+        # '--may_exist' is a typo but for backword compatibility
+        may_exist = (command.has_option('--may_exist')
+                     or command.has_option('--may-exist'))
+        fake_iface = command.has_option('--fake-iface')
+
+        br_name = command.args[0]
+        port_name = command.args[1]
+        iface_names = list(command.args[2])
+        settings = [
+            ctx.parse_column_key_value(
+                self.schema.tables[vswitch_idl.OVSREC_TABLE_PORT], setting)
+            for setting in command.args[3:]]
+
+        ctx.add_port(br_name, port_name, may_exist, fake_iface,
+                     iface_names, settings)
 
     def _del_port(self, ctx, br_name=None, target=None,
                   must_exist=False, with_iface=False):
@@ -1363,6 +1684,22 @@ class VSCtl(object):
         br_name = command.args[0] if len(command.args) == 2 else None
         self._del_port(ctx, br_name, target, must_exist, with_iface)
 
+    def _port_to_br(self, ctx, port_name):
+        ctx.populate_cache()
+        port = ctx.find_port(port_name, True)
+        bridge = port.bridge()
+        if bridge is None:
+            vsctl_fatal('Bridge associated to port "%s" does not exist' %
+                        port_name)
+
+        return bridge.name
+
+    def _cmd_port_to_br(self, ctx, command):
+        iface_name = command.args[0]
+        command.result = self._iface_to_br(ctx, iface_name)
+
+    # Interface commands:
+
     def _list_ifaces(self, ctx, br_name):
         ctx.populate_cache()
 
@@ -1381,6 +1718,26 @@ class VSCtl(object):
         br_name = command.args[0]
         iface_names = self._list_ifaces(ctx, br_name)
         command.result = sorted(iface_names)
+
+    def _iface_to_br(self, ctx, iface_name):
+        ctx.populate_cache()
+        iface = ctx.find_iface(iface_name, True)
+        port = iface.port()
+        if port is None:
+            vsctl_fatal('Port associated to iface "%s" does not exist' %
+                        iface_name)
+        bridge = port.bridge()
+        if bridge is None:
+            vsctl_fatal('Bridge associated to iface "%s" does not exist' %
+                        iface_name)
+
+        return bridge.name
+
+    def _cmd_iface_to_br(self, ctx, command):
+        iface_name = command.args[0]
+        command.result = self._iface_to_br(ctx, iface_name)
+
+    # Utility commands for quantum_adapter:
 
     def _pre_cmd_list_ifaces_verbose(self, ctx, command):
         self._pre_get_info(ctx, command)
@@ -1423,7 +1780,7 @@ class VSCtl(object):
                 iface_cfgs.extend(
                     self._iface_to_dict(vsctl_iface.iface_cfg)
                     for vsctl_iface in vsctl_port.ifaces
-                    if (vsctl_iface.iface_cfg.name == port_name))
+                    if vsctl_iface.iface_cfg.name == port_name)
 
         return iface_cfgs
 
@@ -1435,6 +1792,8 @@ class VSCtl(object):
         LOG.debug('command.args %s', command.args)
         iface_cfgs = self._list_ifaces_verbose(ctx, datapath_id, port_name)
         command.result = sorted(iface_cfgs)
+
+    # Controller commands:
 
     def _verify_controllers(self, ovsrec_bridge):
         ovsrec_bridge.verify(vswitch_idl.OVSREC_BRIDGE_COL_CONTROLLER)
@@ -1504,6 +1863,49 @@ class VSCtl(object):
         controller_names = command.args[1:]
         self._set_controller(ctx, br_name, controller_names)
 
+    def _pre_fail_mode(self, ctx, command):
+        self._pre_get_info(ctx, command)
+        self.schema_helper.register_columns(
+            vswitch_idl.OVSREC_TABLE_BRIDGE,
+            [vswitch_idl.OVSREC_BRIDGE_COL_FAIL_MODE])
+
+    def _get_fail_mode(self, ctx, br_name):
+        ctx.populate_cache()
+        br = ctx.find_bridge(br_name, True)
+
+        # Note: Returns first element of fail_mode column
+        return getattr(br.br_cfg, vswitch_idl.OVSREC_BRIDGE_COL_FAIL_MODE)[0]
+
+    def _cmd_get_fail_mode(self, ctx, command):
+        br_name = command.args[0]
+        command.result = self._get_fail_mode(ctx, br_name)
+
+    def _del_fail_mode(self, ctx, br_name):
+        ctx.populate_cache()
+        br = ctx.find_bridge(br_name, True)
+        # Note: assuming that [] means empty
+        setattr(br.br_cfg, vswitch_idl.OVSREC_BRIDGE_COL_FAIL_MODE, [])
+        ctx.invalidate_cache()
+
+    def _cmd_del_fail_mode(self, ctx, command):
+        br_name = command.args[0]
+        self._del_fail_mode(ctx, br_name)
+
+    def _set_fail_mode(self, ctx, br_name, mode):
+        ctx.populate_cache()
+        br = ctx.find_bridge(br_name, True)
+        setattr(br.br_cfg, vswitch_idl.OVSREC_BRIDGE_COL_FAIL_MODE, mode)
+        ctx.invalidate_cache()
+
+    def _cmd_set_fail_mode(self, ctx, command):
+        br_name = command.args[0]
+        mode = command.args[1]
+        if mode not in ('standalone', 'secure'):
+            vsctl_fatal('fail-mode must be "standalone" or "secure"')
+        self._set_fail_mode(ctx, br_name, mode)
+
+    # Utility commands:
+
     def _del_qos(self, ctx, port_name):
         assert port_name is not None
 
@@ -1564,6 +1966,8 @@ class VSCtl(object):
             [vswitch_idl.OVSREC_QUEUE_COL_DSCP,
              vswitch_idl.OVSREC_QUEUE_COL_EXTERNAL_IDS,
              vswitch_idl.OVSREC_QUEUE_COL_OTHER_CONFIG])
+
+    # Database commands:
 
     _TABLES = [
         _VSCtlTable(vswitch_idl.OVSREC_TABLE_BRIDGE,
@@ -1700,92 +2104,68 @@ class VSCtl(object):
         column_name = self._get_column(table_name, column)
         self.schema_helper.register_columns(table_name, [column_name])
 
-    def _pre_get(self, ctx, table_name, columns):
-        vsctl_table = self._pre_get_table(ctx, table_name)
+    def _pre_get_columns(self, ctx, table_name, columns):
+        self._pre_get_table(ctx, table_name)
         for column in columns:
-            self._pre_get_column(ctx, vsctl_table.table_name, column)
+            self._pre_get_column(ctx, table_name, column)
 
-    def _pre_cmd_get(self, ctx, command):
+    def _pre_cmd_list(self, ctx, command):
         table_name = command.args[0]
-        table_schema = self.schema.tables[table_name]
-        columns = [ctx.parse_column_key_value(table_schema, column_key)[0]
-                   for column_key in command.args[2:]]
-        self._pre_get(ctx, table_name, columns)
+        self._pre_get_table(ctx, table_name)
 
-    def _get(self, ctx, table_name, record_id, column_keys,
-             id_=None, if_exists=False):
-        """
-        :type column_keys: list of (column, key_string)
-                                   where column and key are str
-        """
-        vsctl_table = self._get_table(table_name)
-        row = ctx.must_get_row(vsctl_table, record_id)
-        if id_:
-            raise NotImplementedError()  # TODO:XXX
+    def _list(self, ctx, table_name, record_id=None):
+        result = []
+        for ovsrec_row in ctx.idl.tables[table_name].rows.values():
+            if record_id is not None and ovsrec_row.name != record_id:
+                continue
+            result.append(ovsrec_row)
 
-            symbol, new = ctx.create_symbol(id_)
-            if not new:
-                vsctl_fatal('row id "%s" specified on "get" command was used '
-                            'before it was defined' % id_)
-            symbol.uuid = row.uuid
-            symbol.strong_ref = True
+        return result
 
-        values = []
-        for column, key_string in column_keys:
-            row.verify(column)
-            datum = getattr(row, column)
-            if key_string:
-                if type(datum) != dict:
-                    vsctl_fatal('cannot specify key to get for non-map column '
-                                '%s' % column)
-                values.append(datum[key_string])
-            else:
-                values.append(datum)
-
-        return values
-
-    def _cmd_get(self, ctx, command):
-        id_ = None      # TODO:XXX      --id
-        if_exists = command.has_option('--if-exists')
+    def _cmd_list(self, ctx, command):
         table_name = command.args[0]
-        record_id = command.args[1]
-        table_schema = self.schema.tables[table_name]
-        column_keys = [ctx.parse_column_key_value(table_schema, column_key)[:2]
-                       for column_key in command.args[2:]]
+        record_id = None
+        if len(command.args) > 1:
+            record_id = command.args[1]
 
-        values = self._get(ctx, table_name, record_id, column_keys,
-                           id_, if_exists)
-        command.result = values
+        command.result = self._list(ctx, table_name, record_id)
 
     def _pre_cmd_find(self, ctx, command):
         table_name = command.args[0]
         table_schema = self.schema.tables[table_name]
-        columns = [ctx.parse_column_key_value(table_schema,
-                                              column_key_value)[0]
-                   for column_key_value in command.args[1:]]
-        LOG.debug('columns %s', columns)
-        self._pre_get(ctx, table_name, columns)
+        columns = [
+            ctx.parse_column_key_value(table_schema, column_key_value)[0]
+            for column_key_value in command.args[1:]]
 
-    def _check_value(self, ovsrec_row, column_key_value):
-        column, key, value_json = column_key_value
+        self._pre_get_columns(ctx, table_name, columns)
+
+    def _check_value(self, ovsrec_row, column_value):
+        """
+        :type column_value: tuple of column and value_json
+        """
+        column, value_json = column_value
         column_schema = ovsrec_row._table.columns[column]
         value = ovs.db.data.Datum.from_json(
             column_schema.type, value_json).to_python(ovs.db.idl._uuid_to_row)
         datum = getattr(ovsrec_row, column)
-        if key is None:
-            if datum == value:
-                return True
-        else:
-            if datum[key] != value:
-                return True
+        if column_schema.type.is_map():
+            for k, v in value.items():
+                if k in datum and datum[k] == v:
+                    return True
+        elif datum == value:
+            return True
+
         return False
 
-    def _find(self, ctx, table_name, column_key_values):
+    def _find(self, ctx, table_name, column_values):
+        """
+        :type column_values: list of (column, value_json)
+        """
         result = []
         for ovsrec_row in ctx.idl.tables[table_name].rows.values():
             LOG.debug('ovsrec_row %s', ovsrec_row_to_string(ovsrec_row))
-            if all(self._check_value(ovsrec_row, column_key_value)
-                   for column_key_value in column_key_values):
+            if all(self._check_value(ovsrec_row, column_value)
+                   for column_value in column_values):
                 result.append(ovsrec_row)
 
         return result
@@ -1793,10 +2173,51 @@ class VSCtl(object):
     def _cmd_find(self, ctx, command):
         table_name = command.args[0]
         table_schema = self.schema.tables[table_name]
-        column_key_values = [ctx.parse_column_key_value(table_schema,
-                                                        column_key_value)
-                             for column_key_value in command.args[1:]]
-        command.result = self._find(ctx, table_name, column_key_values)
+        column_values = [
+            ctx.parse_column_key_value(table_schema, column_key_value)
+            for column_key_value in command.args[1:]]
+        command.result = self._find(ctx, table_name, column_values)
+
+    def _pre_cmd_get(self, ctx, command):
+        table_name = command.args[0]
+        columns = [
+            ctx.parse_column_key(column_key)[0]
+            for column_key in command.args[2:]]
+
+        self._pre_get_columns(ctx, table_name, columns)
+
+    def _get(self, ctx, table_name, record_id, column_keys,
+             id_=None, if_exists=False):
+        vsctl_table = self._get_table(table_name)
+        ovsrec_row = ctx.must_get_row(vsctl_table, record_id)
+
+        # TODO: Support symbol name
+        # if id_:
+        #     symbol, new = ctx.create_symbol(id_)
+        #     if not new:
+        #         vsctl_fatal('row id "%s" specified on "get" command was '
+        #                     'used before it was defined' % id_)
+        #     symbol.uuid = row.uuid
+        #     symbol.strong_ref = True
+
+        result = []
+        for column, key in column_keys:
+            result.append(ctx.get_column(ovsrec_row, column, key, if_exists))
+
+        return result
+
+    def _cmd_get(self, ctx, command):
+        id_ = None  # TODO: Support --id option
+        if_exists = command.has_option('--if-exists')
+        table_name = command.args[0]
+        record_id = command.args[1]
+
+        column_keys = [
+            ctx.parse_column_key(column_key)
+            for column_key in command.args[2:]]
+
+        command.result = self._get(
+            ctx, table_name, record_id, column_keys, id_, if_exists)
 
     def _check_mutable(self, table_name, column):
         column_schema = self.schema.tables[table_name].columns[column]
@@ -1804,7 +2225,7 @@ class VSCtl(object):
             vsctl_fatal('cannot modify read-only column %s in table %s' %
                         (column, table_name))
 
-    def _pre_set(self, ctx, table_name, columns):
+    def _pre_mod_columns(self, ctx, table_name, columns):
         self._pre_get_table(ctx, table_name)
         for column in columns:
             self._pre_get_column(ctx, table_name, column)
@@ -1813,19 +2234,20 @@ class VSCtl(object):
     def _pre_cmd_set(self, ctx, command):
         table_name = command.args[0]
         table_schema = self.schema.tables[table_name]
-        columns = [ctx.parse_column_key_value(table_schema,
-                                              column_key_value)[0]
-                   for column_key_value in command.args[2:]]
-        self._pre_set(ctx, table_name, columns)
+        columns = [
+            ctx.parse_column_key_value(table_schema, column_key_value)[0]
+            for column_key_value in command.args[2:]]
 
-    def _set(self, ctx, table_name, record_id, column_key_values):
+        self._pre_mod_columns(ctx, table_name, columns)
+
+    def _set(self, ctx, table_name, record_id, column_values):
         """
-        :type column_key_values: list of (column, key_string, value_json)
+        :type column_values: list of (column, value_json)
         """
         vsctl_table = self._get_table(table_name)
         ovsrec_row = ctx.must_get_row(vsctl_table, record_id)
-        for column, key, value in column_key_values:
-            ctx.set_column(ovsrec_row, column, key, value)
+        for column, value in column_values:
+            ctx.set_column(ovsrec_row, column, value)
         ctx.invalidate_cache()
 
     def _cmd_set(self, ctx, command):
@@ -1834,21 +2256,90 @@ class VSCtl(object):
 
         # column_key_value: <column>[:<key>]=<value>
         table_schema = self.schema.tables[table_name]
-        column_key_values = [ctx.parse_column_key_value(table_schema,
-                                                        column_key_value)
-                             for column_key_value in command.args[2:]]
+        column_values = [
+            ctx.parse_column_key_value(table_schema, column_key_value)
+            for column_key_value in command.args[2:]]
 
-        self._set(ctx, table_name, record_id, column_key_values)
+        self._set(ctx, table_name, record_id, column_values)
 
-    def _pre_clear(self, ctx, table_name, column):
-        self._pre_get_table(ctx, table_name)
-        self._pre_get_column(ctx, table_name, column)
-        self._check_mutable(table_name, column)
+    def _pre_cmd_add(self, ctx, command):
+        table_name = command.args[0]
+        columns = [command.args[2]]
+
+        self._pre_mod_columns(ctx, table_name, columns)
+
+    def _add(self, ctx, table_name, record_id, column_values):
+        """
+        :type column_values: list of (column, value_json)
+        """
+        vsctl_table = self._get_table(table_name)
+        ovsrec_row = ctx.must_get_row(vsctl_table, record_id)
+        for column, value in column_values:
+            ctx.add_column(ovsrec_row, column, value)
+        ctx.invalidate_cache()
+
+    def _cmd_add(self, ctx, command):
+        table_name = command.args[0]
+        record_id = command.args[1]
+        column = command.args[2]
+
+        column_key_value_strings = []
+        for value in command.args[3:]:
+            if '=' in value:
+                # construct <column>:<key>=value
+                column_key_value_strings.append('%s:%s' % (column, value))
+            else:
+                # construct <column>=value
+                column_key_value_strings.append('%s=%s' % (column, value))
+
+        table_schema = self.schema.tables[table_name]
+        column_values = [
+            ctx.parse_column_key_value(table_schema, column_key_value_string)
+            for column_key_value_string in column_key_value_strings]
+
+        self._add(ctx, table_name, record_id, column_values)
+
+    def _pre_cmd_remove(self, ctx, command):
+        table_name = command.args[0]
+        columns = [command.args[2]]
+
+        self._pre_mod_columns(ctx, table_name, columns)
+
+    def _remove(self, ctx, table_name, record_id, column_values):
+        """
+        :type column_values: list of (column, value_json)
+        """
+        vsctl_table = self._get_table(table_name)
+        ovsrec_row = ctx.must_get_row(vsctl_table, record_id)
+        for column, value in column_values:
+            ctx.remove_column(ovsrec_row, column, value)
+        ctx.invalidate_cache()
+
+    def _cmd_remove(self, ctx, command):
+        table_name = command.args[0]
+        record_id = command.args[1]
+        column = command.args[2]
+
+        column_key_value_strings = []
+        for value in command.args[3:]:
+            if '=' in value:
+                # construct <column>:<key>=value
+                column_key_value_strings.append('%s:%s' % (column, value))
+            else:
+                # construct <column>=value
+                column_key_value_strings.append('%s=%s' % (column, value))
+
+        table_schema = self.schema.tables[table_name]
+        column_values = [
+            ctx.parse_column_key_value(table_schema, column_key_value_string)
+            for column_key_value_string in column_key_value_strings]
+
+        self._remove(ctx, table_name, record_id, column_values)
 
     def _pre_cmd_clear(self, ctx, command):
         table_name = command.args[0]
         column = command.args[2]
-        self._pre_clear(ctx, table_name, column)
+        self._pre_mod_columns(ctx, table_name, [column])
 
     def _clear(self, ctx, table_name, record_id, column):
         vsctl_table = self._get_table(table_name)
@@ -1883,7 +2374,7 @@ def schema_print(schema_location, prefix):
     schema = ovs.db.schema.DbSchema.from_json(json)
 
     print('# Do NOT edit.')
-    print('# This is automatically generated.')
+    print('# This is automatically generated by %s' % __file__)
     print('# created based on version %s' % (schema.version or 'unknown'))
     print('')
     print('')
@@ -1902,10 +2393,11 @@ def schema_print(schema_location, prefix):
 
 def main():
     if len(sys.argv) <= 2:
-        print('Usage: %s <schema file> <prefix>' % sys.argv[0])
+        print('Usage: %s <schema file>' % sys.argv[0])
+        print('e.g.:  %s vswitchd/vswitch.ovsschema' % sys.argv[0])
 
     location = sys.argv[1]
-    prefix = sys.argv[2]
+    prefix = 'OVSREC'
     schema_print(location, prefix)
 
 

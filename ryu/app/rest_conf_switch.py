@@ -21,12 +21,12 @@ This module provides a set of REST API for switch configuration.
 Used by OpenStack Ryu agent.
 """
 
-from six.moves import http_client
 import json
-import logging
-from webob import Response
+
+from six.moves import http_client
 
 from ryu.app.wsgi import ControllerBase
+from ryu.app.wsgi import Response
 from ryu.base import app_manager
 from ryu.controller import conf_switch
 from ryu.lib import dpid as dpid_lib
@@ -111,7 +111,11 @@ class ConfSwitchController(ControllerBase):
 
     def set_key(self, req, dpid, key, **_kwargs):
         def _set_val(dpid, key):
-            val = json.loads(req.body)
+            try:
+                val = req.json if req.body else {}
+            except ValueError:
+                return Response(status=http_client.BAD_REQUEST,
+                                body='invalid syntax %s' % req.body)
             self.conf_switch.set_key(dpid, key, val)
             return None
 

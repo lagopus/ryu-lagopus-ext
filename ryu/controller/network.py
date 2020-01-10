@@ -18,10 +18,12 @@ import collections
 
 from ryu.base import app_manager
 import ryu.exception as ryu_exc
-from ryu.app.rest_nw_id import NW_ID_UNKNOWN
 from ryu.controller import event
 from ryu.exception import NetworkNotFound, NetworkAlreadyExist
 from ryu.exception import PortAlreadyExist, PortNotFound, PortUnknown
+
+
+NW_ID_UNKNOWN = '__NW_ID_UNKNOWN__'
 
 
 class MacAddressAlreadyExist(ryu_exc.RyuException):
@@ -29,12 +31,42 @@ class MacAddressAlreadyExist(ryu_exc.RyuException):
 
 
 class EventNetworkDel(event.EventBase):
+    """
+    An event class for network deletion.
+
+    This event is generated when a network is deleted by the REST API.
+    An instance has at least the following attributes.
+
+    ========== ===================================================================
+    Attribute  Description
+    ========== ===================================================================
+    network_id Network ID
+    ========== ===================================================================
+    """
+
     def __init__(self, network_id):
         super(EventNetworkDel, self).__init__()
         self.network_id = network_id
 
 
 class EventNetworkPort(event.EventBase):
+    """
+    An event class for notification of port arrival and deperture.
+
+    This event is generated when a port is introduced to or removed from a
+    network by the REST API.
+    An instance has at least the following attributes.
+
+    ========== ================================================================
+    Attribute  Description
+    ========== ================================================================
+    network_id Network ID
+    dpid       OpenFlow Datapath ID of the switch to which the port belongs.
+    port_no    OpenFlow port number of the port
+    add_del    True for adding a port.  False for removing a port.
+    ========== ================================================================
+    """
+
     def __init__(self, network_id, dpid, port_no, add_del):
         super(EventNetworkPort, self).__init__()
         self.network_id = network_id
@@ -44,6 +76,26 @@ class EventNetworkPort(event.EventBase):
 
 
 class EventMacAddress(event.EventBase):
+    """
+    An event class for end-point MAC address registration.
+
+    This event is generated when a end-point MAC address is updated
+    by the REST API.
+    An instance has at least the following attributes.
+
+    =========== ===============================================================
+    Attribute   Description
+    =========== ===============================================================
+    network_id  Network ID
+    dpid        OpenFlow Datapath ID of the switch to which the port belongs.
+    port_no     OpenFlow port number of the port
+    mac_address The old MAC address of the port if add_del is False.  Otherwise
+                the new MAC address.
+    add_del     False if this event is a result of a port removal.  Otherwise
+                True.
+    =========== ===============================================================
+    """
+
     def __init__(self, dpid, port_no, network_id, mac_address, add_del):
         super(EventMacAddress, self).__init__()
         assert network_id is not None
@@ -57,6 +109,7 @@ class EventMacAddress(event.EventBase):
 
 class Networks(dict):
     "network_id -> set of (dpid, port_no)"
+
     def __init__(self, f):
         super(Networks, self).__init__()
         self.send_event = f
@@ -148,6 +201,7 @@ class Port(object):
 
 class DPIDs(dict):
     """dpid -> port_no -> Port(port_no, network_id, mac_address)"""
+
     def __init__(self, f, nw_id_unknown):
         super(DPIDs, self).__init__()
         self.send_event = f
@@ -254,6 +308,7 @@ MacPort = collections.namedtuple('MacPort', ('dpid', 'port_no'))
 
 class MacToPort(collections.defaultdict):
     """mac_address -> set of MacPort(dpid, port_no)"""
+
     def __init__(self):
         super(MacToPort, self).__init__(set)
 
@@ -272,6 +327,7 @@ class MacToPort(collections.defaultdict):
 
 class MacAddresses(dict):
     """network_id -> mac_address -> set of (dpid, port_no)"""
+
     def add_port(self, network_id, dpid, port_no, mac_address):
         mac2port = self.setdefault(network_id, MacToPort())
         mac2port.add_port(dpid, port_no, mac_address)

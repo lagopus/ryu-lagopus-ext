@@ -18,10 +18,11 @@ import logging
 import json
 import re
 
-from webob import Response
-
 from ryu.app import conf_switch_key as cs_key
-from ryu.app.wsgi import ControllerBase, WSGIApplication, route
+from ryu.app.wsgi import ControllerBase
+from ryu.app.wsgi import Response
+from ryu.app.wsgi import route
+from ryu.app.wsgi import WSGIApplication
 from ryu.base import app_manager
 from ryu.controller import conf_switch
 from ryu.controller import ofp_event
@@ -424,7 +425,8 @@ class QoSController(ControllerBase):
     @staticmethod
     def delete_ovsdb_addr(dpid):
         ofs = QoSController._OFS_LIST.get(dpid, None)
-        ofs.set_ovsdb_addr(dpid, None)
+        if ofs is not None:
+            ofs.set_ovsdb_addr(dpid, None)
 
     @route('qos_switch', BASE_URL + '/queue/{switchid}',
            methods=['GET'], requirements=REQUIREMENTS)
@@ -506,8 +508,8 @@ class QoSController(ControllerBase):
 
     def _access_switch(self, req, switchid, vlan_id, func, waiters):
         try:
-            rest = json.loads(req.body) if req.body else {}
-        except SyntaxError:
+            rest = req.json if req.body else {}
+        except ValueError:
             QoSController._LOGGER.debug('invalid syntax %s', req.body)
             return Response(status=400)
 
@@ -556,6 +558,22 @@ class QoS(object):
         self.vlan_list[VLANID_NONE] = 0  # for VLAN=None
         self.dp = dp
         self.version = dp.ofproto.OFP_VERSION
+        # Dictionary of port name to Queue config.
+        # e.g.)
+        # self.queue_list = {
+        #     "s1-eth1": {
+        #         "0": {
+        #             "config": {
+        #                 "max-rate": "600000"
+        #             }
+        #         },
+        #         "1": {
+        #             "config": {
+        #                 "min-rate": "900000"
+        #             }
+        #         }
+        #     }
+        # }
         self.queue_list = {}
         self.CONF = CONF
         self.ovsdb_addr = None
@@ -583,25 +601,22 @@ class QoS(object):
         self.ofctl.mod_flow_entry(self.dp, flow, cmd)
 
     def set_ovsdb_addr(self, dpid, ovsdb_addr):
-        # easy check if the address format valid
-        _proto, _host, _port = ovsdb_addr.split(':')
-
         old_address = self.ovsdb_addr
         if old_address == ovsdb_addr:
             return
-        if ovsdb_addr is None:
+        elif ovsdb_addr is None:
+            # Determine deleting OVSDB address was requested.
             if self.ovs_bridge:
-                self.ovs_bridge.del_controller()
                 self.ovs_bridge = None
             return
+
+        ovs_bridge = bridge.OVSBridge(self.CONF, dpid, ovsdb_addr)
+        try:
+            ovs_bridge.init()
+        except:
+            raise ValueError('ovsdb addr is not available.')
         self.ovsdb_addr = ovsdb_addr
-        if self.ovs_bridge is None:
-            ovs_bridge = bridge.OVSBridge(self.CONF, dpid, ovsdb_addr)
-            self.ovs_bridge = ovs_bridge
-            try:
-                ovs_bridge.init()
-            except:
-                raise ValueError('ovsdb addr is not available.')
+        self.ovs_bridge = ovs_bridge
 
     def _update_vlan_list(self, vlan_list):
         for vlan_id in self.vlan_list.keys():
@@ -664,7 +679,15 @@ class QoS(object):
                    'details': 'ovs_bridge is not exists'}
             return REST_COMMAND_RESULT, msg
 
-        self.queue_list.clear()
+        port_name = rest.get(REST_PORT_NAME, None)
+        vif_ports = self.ovs_bridge.get_port_name_list()
+
+        if port_name is not None:
+            if port_name not in vif_ports:
+                raise ValueError('%s port is not exists' % port_name)
+            vif_ports = [port_name]
+
+        queue_list = {}
         queue_type = rest.get(REST_QUEUE_TYPE, 'linux-htb')
         parent_max_rate = rest.get(REST_QUEUE_MAX_RATE, None)
         queues = rest.get(REST_QUEUES, [])
@@ -682,16 +705,8 @@ class QoS(object):
                 config['min-rate'] = min_rate
             if len(config):
                 queue_config.append(config)
-            self.queue_list[queue_id] = {'config': config}
+            queue_list[queue_id] = {'config': config}
             queue_id += 1
-
-        port_name = rest.get(REST_PORT_NAME, None)
-        vif_ports = self.ovs_bridge.get_port_name_list()
-
-        if port_name is not None:
-            if port_name not in vif_ports:
-                raise ValueError('%s port is not exists' % port_name)
-            vif_ports = [port_name]
 
         for port_name in vif_ports:
             try:
@@ -700,9 +715,10 @@ class QoS(object):
                                         queues=queue_config)
             except Exception as msg:
                 raise ValueError(msg)
+            self.queue_list[port_name] = queue_list
 
         msg = {'result': 'success',
-               'details': self.queue_list}
+               'details': queue_list}
 
         return REST_COMMAND_RESULT, msg
 
@@ -717,9 +733,9 @@ class QoS(object):
 
     @rest_command
     def delete_queue(self, rest, vlan_id):
-        self.queue_list.clear()
         if self._delete_queue():
             msg = 'success'
+            self.queue_list.clear()
         else:
             msg = 'failure'
 
@@ -1127,20 +1143,20 @@ class Match(object):
 class Action(object):
 
     @staticmethod
-    def to_rest(openflow):
-        if REST_ACTION in openflow:
+    def to_rest(flow):
+        if REST_ACTION in flow:
             actions = []
-            for action in openflow[REST_ACTION]:
-                field_value = re.search('SET_FIELD: {ip_dscp:(\d+)', action)
+            for act in flow[REST_ACTION]:
+                field_value = re.search(r'SET_FIELD: \{ip_dscp:(\d+)', act)
                 if field_value:
                     actions.append({REST_ACTION_MARK: field_value.group(1)})
-                meter_value = re.search('METER:(\d+)', action)
+                meter_value = re.search(r'METER:(\d+)', act)
                 if meter_value:
                     actions.append({REST_ACTION_METER: meter_value.group(1)})
-                queue_value = re.search('SET_QUEUE:(\d+)', action)
+                queue_value = re.search(r'SET_QUEUE:(\d+)', act)
                 if queue_value:
                     actions.append({REST_ACTION_QUEUE: queue_value.group(1)})
-                action = {REST_ACTION: actions}
+            action = {REST_ACTION: actions}
         else:
             action = {REST_ACTION: 'Unknown action type.'}
 

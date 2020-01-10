@@ -6,6 +6,12 @@ from ryu.lib.packet.bgp import RF_IPv4_UC
 from ryu.lib.packet.bgp import RF_IPv6_UC
 from ryu.lib.packet.bgp import RF_IPv4_VPN
 from ryu.lib.packet.bgp import RF_IPv6_VPN
+from ryu.lib.packet.bgp import RF_L2_EVPN
+from ryu.lib.packet.bgp import RF_IPv4_FLOWSPEC
+from ryu.lib.packet.bgp import RF_IPv6_FLOWSPEC
+from ryu.lib.packet.bgp import RF_VPNv4_FLOWSPEC
+from ryu.lib.packet.bgp import RF_VPNv6_FLOWSPEC
+from ryu.lib.packet.bgp import RF_L2VPN_FLOWSPEC
 from ryu.lib.packet.bgp import RF_RTC_UC
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_ORIGIN
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AS_PATH
@@ -82,10 +88,17 @@ class InternalApi(object):
             'ipv6': RF_IPv6_UC,
             'vpnv4': RF_IPv4_VPN,
             'vpnv6': RF_IPv6_VPN,
+            'evpn': RF_L2_EVPN,
+            'ipv4fs': RF_IPv4_FLOWSPEC,
+            'ipv6fs': RF_IPv6_FLOWSPEC,
+            'vpnv4fs': RF_VPNv4_FLOWSPEC,
+            'vpnv6fs': RF_VPNv6_FLOWSPEC,
+            'l2vpnfs': RF_L2VPN_FLOWSPEC,
             'rtfilter': RF_RTC_UC
         }
         if addr_family not in rfs:
-            raise WrongParamError('Unknown or unsupported family')
+            raise WrongParamError('Unknown or unsupported family: %s' %
+                                  addr_family)
 
         rf = rfs.get(addr_family)
         table_manager = self.get_core_service().table_manager
@@ -98,13 +111,13 @@ class InternalApi(object):
 
     def _dst_to_dict(self, dst):
         ret = {'paths': [],
-               'prefix': dst.nlri.formatted_nlri_str}
+               'prefix': dst.nlri_str}
 
         def _path_to_dict(dst, path):
 
             path_seg_list = path.get_pattr(BGP_ATTR_TYPE_AS_PATH).path_seg_list
 
-            if type(path_seg_list) == list:
+            if isinstance(path_seg_list, list):
                 aspath = []
                 for as_path_seg in path_seg_list:
                     for as_num in as_path_seg:
@@ -140,7 +153,7 @@ class InternalApi(object):
 
             return {'best': (path == dst.best_path),
                     'bpr': bpr,
-                    'prefix': path.nlri.formatted_nlri_str,
+                    'prefix': path.nlri_str,
                     'labels': labels,
                     'nexthop': nexthop,
                     'metric': med,
@@ -154,10 +167,7 @@ class InternalApi(object):
         return ret
 
     def check_logging(self):
-        if self.log_handler and self._has_log_handler(self.log_handler):
-            return True
-        else:
-            return False
+        return self.log_handler and self._has_log_handler(self.log_handler)
 
     def check_logging_level(self):
         return logging.getLevelName(self.log_handler.level)
@@ -177,7 +187,7 @@ class InternalApi(object):
                 route_families.extend(SUPPORTED_GLOBAL_RF)
             else:
                 route_family = RouteFamily(afi, safi)
-                if (route_family not in SUPPORTED_GLOBAL_RF):
+                if route_family not in SUPPORTED_GLOBAL_RF:
                     raise WrongParamError('Not supported address-family'
                                           ' %s, %s' % (afi, safi))
                 route_families.append(route_family)

@@ -27,6 +27,7 @@ LOG = logging.getLogger('bgpspeaker.model')
 
 class Counter(object):
     """Simple counter for keeping count of several keys."""
+
     def __init__(self):
         self._counters = {}
 
@@ -96,8 +97,20 @@ class FlexinetOutgoingRoute(object):
     def __init__(self, path, route_dist):
         from ryu.services.protocols.bgp.info_base.vrf4 import Vrf4Path
         from ryu.services.protocols.bgp.info_base.vrf6 import Vrf6Path
+        from ryu.services.protocols.bgp.info_base.vrfevpn import VrfEvpnPath
+        from ryu.services.protocols.bgp.info_base.vrf4fs import (
+            Vrf4FlowSpecPath)
+        from ryu.services.protocols.bgp.info_base.vrf6fs import (
+            Vrf6FlowSpecPath)
+        from ryu.services.protocols.bgp.info_base.vrfl2vpnfs import (
+            L2vpnFlowSpecPath)
         assert path.route_family in (Vrf4Path.ROUTE_FAMILY,
-                                     Vrf6Path.ROUTE_FAMILY)
+                                     Vrf6Path.ROUTE_FAMILY,
+                                     VrfEvpnPath.ROUTE_FAMILY,
+                                     Vrf4FlowSpecPath.ROUTE_FAMILY,
+                                     Vrf6FlowSpecPath.ROUTE_FAMILY,
+                                     L2vpnFlowSpecPath.ROUTE_FAMILY,
+                                     )
 
         self.sink = None
         self._path = path

@@ -16,22 +16,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import sys
+
 from ryu.lib import hub
 hub.patch(thread=False)
 
-# TODO:
-#   Right now, we have our own patched copy of ovs python bindings
-#   Once our modification is upstreamed and widely deployed,
-#   use it
-#
-# NOTE: this modifies sys.path and thus affects the following imports.
-import ryu.contrib
-ryu.contrib.update_module_path()
-
 from ryu import cfg
-import logging
-import sys
 
+import logging
 from ryu import log
 log.early_init_log(logging.DEBUG)
 
@@ -53,10 +46,28 @@ CONF.register_cli_opts([
     cfg.BoolOpt('enable-debugger', default=False,
                 help='don\'t overwrite Python standard threading library'
                 '(use only for debugging)'),
+    cfg.StrOpt('user-flags', default=None,
+               help='Additional flags file for user applications'),
 ])
 
 
+def _parse_user_flags():
+    """
+    Parses user-flags file and loads it to register user defined options.
+    """
+    try:
+        idx = list(sys.argv).index('--user-flags')
+        user_flags_file = sys.argv[idx + 1]
+    except (ValueError, IndexError):
+        user_flags_file = ''
+
+    if user_flags_file and os.path.isfile(user_flags_file):
+        from ryu.utils import _import_module_file
+        _import_module_file(user_flags_file)
+
+
 def main(args=None, prog=None):
+    _parse_user_flags()
     try:
         CONF(args=args, prog=prog,
              project='ryu', version='ryu-manager %s' % version,
@@ -66,21 +77,20 @@ def main(args=None, prog=None):
              project='ryu', version='ryu-manager %s' % version)
 
     log.init_log()
+    logger = logging.getLogger(__name__)
 
     if CONF.enable_debugger:
-        LOG = logging.getLogger('ryu.cmd.manager')
         msg = 'debugging is available (--enable-debugger option is turned on)'
-        LOG.info(msg)
+        logger.info(msg)
     else:
         hub.patch(thread=True)
 
     if CONF.pid_file:
-        import os
         with open(CONF.pid_file, 'w') as pid_file:
             pid_file.write(str(os.getpid()))
 
     app_lists = CONF.app_lists + CONF.app
-    # keep old behaivor, run ofp if no application is specified.
+    # keep old behavior, run ofp if no application is specified.
     if not app_lists:
         app_lists = ['ryu.controller.ofp_handler']
 
@@ -97,6 +107,9 @@ def main(args=None, prog=None):
 
     try:
         hub.joinall(services)
+    except KeyboardInterrupt:
+        logger.debug("Keyboard Interrupt received. "
+                     "Closing RYU application manager...")
     finally:
         app_mgr.close()
 

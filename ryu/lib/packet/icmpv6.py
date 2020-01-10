@@ -75,7 +75,7 @@ BLOCK_OLD_SOURCES = 6
 
 
 class icmpv6(packet_base.PacketBase):
-    """ICMPv6 (RFC 2463) header encoder/decoder class.
+    r"""ICMPv6 (RFC 2463) header encoder/decoder class.
 
     An instance has the following attributes at least.
     Most of them are same to the on-wire counterparts but in host byte order.
@@ -112,7 +112,7 @@ class icmpv6(packet_base.PacketBase):
             return cls
         return _register_icmpv6_type
 
-    def __init__(self, type_=0, code=0, csum=0, data=None):
+    def __init__(self, type_=0, code=0, csum=0, data=b''):
         super(icmpv6, self).__init__()
         self.type_ = type_
         self.code = code
@@ -137,8 +137,9 @@ class icmpv6(packet_base.PacketBase):
         hdr = bytearray(struct.pack(icmpv6._PACK_STR, self.type_,
                                     self.code, self.csum))
 
-        if self.data is not None:
+        if self.data:
             if self.type_ in icmpv6._ICMPV6_TYPES:
+                assert isinstance(self.data, _ICMPv6Payload)
                 hdr += self.data.serialize()
             else:
                 hdr += self.data
@@ -149,14 +150,18 @@ class icmpv6(packet_base.PacketBase):
         return hdr
 
     def __len__(self):
-        length = self._MIN_LEN
-        if self.data is not None:
-            length += len(self.data)
-        return length
+        return self._MIN_LEN + len(self.data)
+
+
+@six.add_metaclass(abc.ABCMeta)
+class _ICMPv6Payload(stringify.StringifyMixin):
+    """
+    Base class for the payload of ICMPv6 packet.
+    """
 
 
 @icmpv6.register_icmpv6_type(ND_NEIGHBOR_SOLICIT, ND_NEIGHBOR_ADVERT)
-class nd_neighbor(stringify.StringifyMixin):
+class nd_neighbor(_ICMPv6Payload):
     """ICMPv6 sub encoder/decoder class for Neighbor Solicitation and
     Neighbor Advertisement messages. (RFC 4861)
 
@@ -206,7 +211,9 @@ class nd_neighbor(stringify.StringifyMixin):
         offset += cls._MIN_LEN
         option = None
         if len(buf) > offset:
-            (type_, ) = struct.unpack_from('!B', buf, offset)
+            (type_, length) = struct.unpack_from('!BB', buf, offset)
+            if length == 0:
+                raise struct.error('Invalid length: {len}'.format(len=length))
             cls_ = cls._ND_OPTION_TYPES.get(type_)
             if cls_ is not None:
                 option = cls_.parser(buf, offset)
@@ -235,7 +242,7 @@ class nd_neighbor(stringify.StringifyMixin):
 
 
 @icmpv6.register_icmpv6_type(ND_ROUTER_SOLICIT)
-class nd_router_solicit(stringify.StringifyMixin):
+class nd_router_solicit(_ICMPv6Payload):
     """ICMPv6 sub encoder/decoder class for Router Solicitation messages.
     (RFC 4861)
 
@@ -277,7 +284,9 @@ class nd_router_solicit(stringify.StringifyMixin):
         offset += cls._MIN_LEN
         option = None
         if len(buf) > offset:
-            (type_, ) = struct.unpack_from('!B', buf, offset)
+            (type_, length) = struct.unpack_from('!BB', buf, offset)
+            if length == 0:
+                raise struct.error('Invalid length: {len}'.format(len=length))
             cls_ = cls._ND_OPTION_TYPES.get(type_)
             if cls_ is not None:
                 option = cls_.parser(buf, offset)
@@ -304,7 +313,7 @@ class nd_router_solicit(stringify.StringifyMixin):
 
 
 @icmpv6.register_icmpv6_type(ND_ROUTER_ADVERT)
-class nd_router_advert(stringify.StringifyMixin):
+class nd_router_advert(_ICMPv6Payload):
     """ICMPv6 sub encoder/decoder class for Router Advertisement messages.
     (RFC 4861)
 
@@ -359,11 +368,13 @@ class nd_router_advert(stringify.StringifyMixin):
         options = []
         while len(buf) > offset:
             (type_, length) = struct.unpack_from('!BB', buf, offset)
+            if length == 0:
+                raise struct.error('Invalid length: {len}'.format(len=length))
             cls_ = cls._ND_OPTION_TYPES.get(type_)
             if cls_ is not None:
                 option = cls_.parser(buf, offset)
             else:
-                option = buf[offset:offset + (length * 8 - 2)]
+                option = buf[offset:offset + (length * 8)]
             options.append(option)
             offset += len(option)
         msg = cls(ch_l, res >> 6, rou_l, rea_t, ret_t, options)
@@ -542,7 +553,7 @@ class nd_option_tla(nd_option_la):
 
 @nd_router_advert.register_nd_option_type
 class nd_option_pi(nd_option):
-    """ICMPv6 sub encoder/decoder class for Neighbor discovery
+    r"""ICMPv6 sub encoder/decoder class for Neighbor discovery
     Prefix Information Option. (RFC 4861)
 
     This is used with ryu.lib.packet.icmpv6.nd_router_advert.
@@ -613,7 +624,7 @@ class nd_option_pi(nd_option):
 
 
 @icmpv6.register_icmpv6_type(ICMPV6_ECHO_REPLY, ICMPV6_ECHO_REQUEST)
-class echo(stringify.StringifyMixin):
+class echo(_ICMPv6Payload):
     """ICMPv6 sub encoder/decoder class for Echo Request and Echo Reply
     messages.
 
@@ -669,7 +680,7 @@ class echo(stringify.StringifyMixin):
 
 @icmpv6.register_icmpv6_type(
     MLD_LISTENER_QUERY, MLD_LISTENER_REPOR, MLD_LISTENER_DONE)
-class mld(stringify.StringifyMixin):
+class mld(_ICMPv6Payload):
     """ICMPv6 sub encoder/decoder class for MLD Lister Query,
     MLD Listener Report, and MLD Listener Done messages. (RFC 2710)
 
@@ -796,8 +807,8 @@ class mldv2_query(mld):
     def serialize(self):
         s_qrv = self.s_flg << 3 | self.qrv
         buf = bytearray(struct.pack(self._PACK_STR, self.maxresp,
-                        addrconv.ipv6.text_to_bin(self.address), s_qrv,
-                        self.qqic, self.num))
+                                    addrconv.ipv6.text_to_bin(self.address), s_qrv,
+                                    self.qqic, self.num))
         for src in self.srcs:
             buf.extend(struct.pack('16s', addrconv.ipv6.text_to_bin(src)))
         if 0 == self.num:
@@ -873,7 +884,7 @@ class mldv2_report(mld):
 
 
 class mldv2_report_group(stringify.StringifyMixin):
-    """
+    r"""
     ICMPv6 sub encoder/decoder class for MLD v2 Lister Report Group
     Record messages. (RFC 3810)
 
@@ -940,8 +951,8 @@ class mldv2_report_group(stringify.StringifyMixin):
 
     def serialize(self):
         buf = bytearray(struct.pack(self._PACK_STR, self.type_,
-                        self.aux_len, self.num,
-                        addrconv.ipv6.text_to_bin(self.address)))
+                                    self.aux_len, self.num,
+                                    addrconv.ipv6.text_to_bin(self.address)))
         for src in self.srcs:
             buf.extend(struct.pack('16s', addrconv.ipv6.text_to_bin(src)))
         if 0 == self.num:

@@ -21,8 +21,8 @@
                         "recirc_table": 4, 
                         "subtype": 35, 
                         "type": 65535, 
-                        "zone_ofs_nbits": 0, 
-                        "zone_src": 0
+                        "zone_ofs_nbits": 283,
+                        "zone_src": "reg0"
                      }
                   }
                ], 
@@ -56,7 +56,6 @@
       "out_group": 4294967295, 
       "out_port": 4294967295, 
       "priority": 32768, 
-      "table_id": 3, 
-      "xid": 2
+      "table_id": 3
    }
 }

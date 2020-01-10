@@ -19,16 +19,30 @@
 
 import abc
 import logging
+import six
 
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_ORIGIN
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AS_PATH
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_EXTENDED_COMMUNITIES
+from ryu.lib.packet.bgp import BGP_ATTR_TYEP_PMSI_TUNNEL_ATTRIBUTE
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MULTI_EXIT_DISC
 from ryu.lib.packet.bgp import BGPPathAttributeOrigin
 from ryu.lib.packet.bgp import BGPPathAttributeAsPath
+from ryu.lib.packet.bgp import EvpnEthernetSegmentNLRI
 from ryu.lib.packet.bgp import BGPPathAttributeExtendedCommunities
-from ryu.lib.packet.bgp import BGPTwoOctetAsSpecificExtendedCommunity
 from ryu.lib.packet.bgp import BGPPathAttributeMultiExitDisc
+from ryu.lib.packet.bgp import BGPEncapsulationExtendedCommunity
+from ryu.lib.packet.bgp import BGPEvpnEsiLabelExtendedCommunity
+from ryu.lib.packet.bgp import BGPEvpnEsImportRTExtendedCommunity
+from ryu.lib.packet.bgp import BGPPathAttributePmsiTunnel
+from ryu.lib.packet.bgp import PmsiTunnelIdIngressReplication
+from ryu.lib.packet.bgp import RF_L2_EVPN
+from ryu.lib.packet.bgp import EvpnMacIPAdvertisementNLRI
+from ryu.lib.packet.bgp import EvpnIpPrefixNLRI
+from ryu.lib.packet.safi import (
+    IP_FLOWSPEC,
+    VPN_FLOWSPEC,
+)
 
 from ryu.services.protocols.bgp.base import OrderedDict
 from ryu.services.protocols.bgp.constants import VPN_TABLE
@@ -36,6 +50,7 @@ from ryu.services.protocols.bgp.constants import VRF_TABLE
 from ryu.services.protocols.bgp.info_base.base import Destination
 from ryu.services.protocols.bgp.info_base.base import Path
 from ryu.services.protocols.bgp.info_base.base import Table
+from ryu.services.protocols.bgp.utils.bgp import create_rt_extended_community
 from ryu.services.protocols.bgp.utils.stats import LOCAL_ROUTES
 from ryu.services.protocols.bgp.utils.stats import REMOTE_ROUTES
 from ryu.services.protocols.bgp.utils.stats import RESOURCE_ID
@@ -44,12 +59,12 @@ from ryu.services.protocols.bgp.utils.stats import RESOURCE_NAME
 LOG = logging.getLogger('bgpspeaker.info_base.vrf')
 
 
+@six.add_metaclass(abc.ABCMeta)
 class VrfTable(Table):
     """Virtual Routing and Forwarding information base.
      Keeps destination imported to given vrf in represents.
      """
 
-    __metaclass__ = abc.ABCMeta
     ROUTE_FAMILY = None
     VPN_ROUTE_FAMILY = None
     NLRI_CLASS = None
@@ -86,7 +101,10 @@ class VrfTable(Table):
         """Return a key that will uniquely identify this NLRI inside
         this table.
         """
-        return str(nlri)
+        # Note: We use `prefix` representation of the NLRI, because
+        # BGP route can be identified without the route distinguisher
+        # value in the VRF space.
+        return nlri.prefix
 
     def _create_dest(self, nlri):
         return self.VRF_DEST_CLASS(self, nlri)
@@ -104,8 +122,8 @@ class VrfTable(Table):
         local_route_count = 0
         for dest in self.values():
             for path in dest.known_path_list:
-                if (hasattr(path.source, 'version_num')
-                        or path.source == VPN_TABLE):
+                if (hasattr(path.source, 'version_num') or
+                        path.source == VPN_TABLE):
                     remote_route_count += 1
                 else:
                     local_route_count += 1
@@ -133,7 +151,8 @@ class VrfTable(Table):
                 self.import_vpn_path(vpn_path)
 
     def import_vpn_path(self, vpn_path):
-        """Imports `vpnv(4|6)_path` into `vrf(4|6)_table`.
+        """Imports `vpnv(4|6)_path` into `vrf(4|6)_table` or `evpn_path`
+        into vrfevpn_table`.
 
         :Parameters:
             - `vpn_path`: (Path) VPN path that will be cloned and imported
@@ -147,21 +166,29 @@ class VrfTable(Table):
         source = vpn_path.source
         if not source:
             source = VRF_TABLE
-        ip, masklen = vpn_path.nlri.prefix.split('/')
-        vrf_nlri = self.NLRI_CLASS(length=int(masklen), addr=ip)
 
-        vpn_nlri = vpn_path.nlri
-        puid = self.VRF_PATH_CLASS.create_puid(vpn_nlri.route_dist,
-                                               vpn_nlri.prefix)
+        if self.VPN_ROUTE_FAMILY == RF_L2_EVPN:
+            # Because NLRI class is the same if the route family is EVPN,
+            # we re-use the NLRI instance.
+            vrf_nlri = vpn_path.nlri
+        elif self.ROUTE_FAMILY.safi in [IP_FLOWSPEC, VPN_FLOWSPEC]:
+            vrf_nlri = self.NLRI_CLASS(rules=vpn_path.nlri.rules)
+        else:  # self.VPN_ROUTE_FAMILY in [RF_IPv4_VPN, RF_IPv6_VPN]
+            # Copy NLRI instance
+            ip, masklen = vpn_path.nlri.prefix.split('/')
+            vrf_nlri = self.NLRI_CLASS(length=int(masklen), addr=ip)
+
         vrf_path = self.VRF_PATH_CLASS(
-            puid,
-            source,
-            vrf_nlri,
-            vpn_path.source_version_num,
+            puid=self.VRF_PATH_CLASS.create_puid(
+                vpn_path.nlri.route_dist,
+                vpn_path.nlri.prefix),
+            source=source,
+            nlri=vrf_nlri,
+            src_ver_num=vpn_path.source_version_num,
             pattrs=vpn_path.pathattr_map,
             nexthop=vpn_path.nexthop,
             is_withdraw=vpn_path.is_withdraw,
-            label_list=vpn_path.nlri.label_list
+            label_list=getattr(vpn_path.nlri, 'label_list', None),
         )
         if self._is_vrf_path_already_in_table(vrf_path):
             return None
@@ -196,45 +223,13 @@ class VrfTable(Table):
                         changed_dests.append(dest)
         return changed_dests
 
-    def insert_vrf_path(self, ip_nlri, next_hop=None,
-                        gen_lbl=False, is_withdraw=False):
-        assert ip_nlri
+    def insert_vrf_path(self, nlri, next_hop=None,
+                        gen_lbl=False, is_withdraw=False, **kwargs):
+        assert nlri
         pattrs = None
         label_list = []
         vrf_conf = self.vrf_conf
         if not is_withdraw:
-            # Create a dictionary for path-attrs.
-            pattrs = OrderedDict()
-
-            # MpReachNlri and/or MpUnReachNlri attribute info. is contained
-            # in the path. Hence we do not add these attributes here.
-            from ryu.services.protocols.bgp.core import EXPECTED_ORIGIN
-
-            pattrs[BGP_ATTR_TYPE_ORIGIN] = BGPPathAttributeOrigin(
-                EXPECTED_ORIGIN)
-            pattrs[BGP_ATTR_TYPE_AS_PATH] = BGPPathAttributeAsPath([])
-            communities = []
-            for rt in vrf_conf.export_rts:
-                as_num, local_admin = rt.split(':')
-                subtype = 2
-                communities.append(BGPTwoOctetAsSpecificExtendedCommunity(
-                                   as_number=int(as_num),
-                                   local_administrator=int(local_admin),
-                                   subtype=subtype))
-            for soo in vrf_conf.soo_list:
-                as_num, local_admin = soo.split(':')
-                subtype = 3
-                communities.append(BGPTwoOctetAsSpecificExtendedCommunity(
-                                   as_number=int(as_num),
-                                   local_administrator=int(local_admin),
-                                   subtype=subtype))
-
-            pattrs[BGP_ATTR_TYPE_EXTENDED_COMMUNITIES] = \
-                BGPPathAttributeExtendedCommunities(communities=communities)
-            if vrf_conf.multi_exit_disc:
-                pattrs[BGP_ATTR_TYPE_MULTI_EXIT_DISC] = \
-                    BGPPathAttributeMultiExitDisc(vrf_conf.multi_exit_disc)
-
             table_manager = self._core_service.table_manager
             if gen_lbl and next_hop:
                 # Label per next_hop demands we use a different label
@@ -251,11 +246,93 @@ class VrfTable(Table):
                 # If we do not have next_hop, get a new label.
                 label_list.append(table_manager.get_next_vpnv4_label())
 
+            # Set MPLS labels with the generated labels
+            if gen_lbl and isinstance(nlri, EvpnMacIPAdvertisementNLRI):
+                nlri.mpls_labels = label_list[:2]
+            elif gen_lbl and isinstance(nlri, EvpnIpPrefixNLRI):
+                nlri.mpls_label = label_list[0]
+
+            # Create a dictionary for path-attrs.
+            pattrs = OrderedDict()
+
+            # MpReachNlri and/or MpUnReachNlri attribute info. is contained
+            # in the path. Hence we do not add these attributes here.
+            from ryu.services.protocols.bgp.core import EXPECTED_ORIGIN
+
+            pattrs[BGP_ATTR_TYPE_ORIGIN] = BGPPathAttributeOrigin(
+                EXPECTED_ORIGIN)
+            pattrs[BGP_ATTR_TYPE_AS_PATH] = BGPPathAttributeAsPath([])
+            communities = []
+
+            # Set ES-Import Route Target
+            if isinstance(nlri, EvpnEthernetSegmentNLRI):
+                subtype = 2
+                es_import = nlri.esi.mac_addr
+                communities.append(BGPEvpnEsImportRTExtendedCommunity(
+                                   subtype=subtype,
+                                   es_import=es_import))
+
+            for rt in vrf_conf.export_rts:
+                communities.append(create_rt_extended_community(rt, 2))
+            for soo in vrf_conf.soo_list:
+                communities.append(create_rt_extended_community(soo, 3))
+
+            # Set Tunnel Encapsulation Attribute
+            tunnel_type = kwargs.get('tunnel_type', None)
+            if tunnel_type:
+                communities.append(
+                    BGPEncapsulationExtendedCommunity.from_str(tunnel_type))
+
+            # Set ESI Label Extended Community
+            redundancy_mode = kwargs.get('redundancy_mode', None)
+            if redundancy_mode is not None:
+                subtype = 1
+                flags = 0
+
+                from ryu.services.protocols.bgp.api.prefix import (
+                    REDUNDANCY_MODE_SINGLE_ACTIVE)
+                if redundancy_mode == REDUNDANCY_MODE_SINGLE_ACTIVE:
+                    flags |= BGPEvpnEsiLabelExtendedCommunity.SINGLE_ACTIVE_BIT
+
+                vni = kwargs.get('vni', None)
+                if vni is not None:
+                    communities.append(BGPEvpnEsiLabelExtendedCommunity(
+                        subtype=subtype,
+                        flags=flags,
+                        vni=vni))
+                else:
+                    communities.append(BGPEvpnEsiLabelExtendedCommunity(
+                                       subtype=subtype,
+                                       flags=flags,
+                                       mpls_label=label_list[0]))
+
+            pattrs[BGP_ATTR_TYPE_EXTENDED_COMMUNITIES] = \
+                BGPPathAttributeExtendedCommunities(communities=communities)
+            if vrf_conf.multi_exit_disc:
+                pattrs[BGP_ATTR_TYPE_MULTI_EXIT_DISC] = \
+                    BGPPathAttributeMultiExitDisc(vrf_conf.multi_exit_disc)
+
+            # Set PMSI Tunnel Attribute
+            pmsi_tunnel_type = kwargs.get('pmsi_tunnel_type', None)
+            if pmsi_tunnel_type is not None:
+                from ryu.services.protocols.bgp.api.prefix import (
+                    PMSI_TYPE_INGRESS_REP)
+                if pmsi_tunnel_type == PMSI_TYPE_INGRESS_REP:
+                    tunnel_id = PmsiTunnelIdIngressReplication(
+                        tunnel_endpoint_ip=self._core_service.router_id)
+                else:  # pmsi_tunnel_type == PMSI_TYPE_NO_TUNNEL_INFO
+                    tunnel_id = None
+                pattrs[BGP_ATTR_TYEP_PMSI_TUNNEL_ATTRIBUTE] = \
+                    BGPPathAttributePmsiTunnel(pmsi_flags=0,
+                                               tunnel_type=pmsi_tunnel_type,
+                                               tunnel_id=tunnel_id,
+                                               vni=kwargs.get('vni', None))
+
         puid = self.VRF_PATH_CLASS.create_puid(
-            vrf_conf.route_dist, ip_nlri.prefix
-        )
+            vrf_conf.route_dist, nlri.prefix)
+
         path = self.VRF_PATH_CLASS(
-            puid, None, ip_nlri, 0, pattrs=pattrs,
+            puid, None, nlri, 0, pattrs=pattrs,
             nexthop=next_hop, label_list=label_list,
             is_withdraw=is_withdraw
         )
@@ -273,13 +350,20 @@ class VrfTable(Table):
         return super(VrfTable, self).clean_uninteresting_paths(interested_rts)
 
 
+@six.add_metaclass(abc.ABCMeta)
 class VrfDest(Destination):
     """Base class for VRF destination."""
-    __metaclass__ = abc.ABCMeta
 
     def __init__(self, table, nlri):
         super(VrfDest, self).__init__(table, nlri)
         self._route_dist = self._table.vrf_conf.route_dist
+
+    @property
+    def nlri_str(self):
+        # Returns `prefix` without the route distinguisher value, because
+        # a destination in VRF space can be identified without the route
+        # distinguisher.
+        return self._nlri.prefix
 
     def _best_path_lost(self):
         # Have to send update messages for withdraw of best-path to Network
@@ -409,7 +493,7 @@ class VrfDest(Destination):
                 # version num. as new_paths are implicit withdrawal of old
                 # paths and when doing RouteRefresh (not EnhancedRouteRefresh)
                 # we get same paths again.
-                if (new_path.puid == path.puid):
+                if new_path.puid == path.puid:
                     old_paths.append(path)
                     break
 
@@ -424,11 +508,11 @@ class VrfDest(Destination):
                              'with attribute label_list got %s' % path)
 
 
+@six.add_metaclass(abc.ABCMeta)
 class VrfPath(Path):
     """Represents a way of reaching an IP destination with a VPN.
     """
     __slots__ = ('_label_list', '_puid')
-    __metaclass__ = abc.ABCMeta
 
     ROUTE_FAMILY = None
     VPN_PATH_CLASS = None
@@ -445,6 +529,9 @@ class VrfPath(Path):
                 - `label_list`: (list) List of labels for this path.
             Note: other parameters are as documented in super class.
         """
+        if self.ROUTE_FAMILY.safi in [IP_FLOWSPEC, VPN_FLOWSPEC]:
+            nexthop = '0.0.0.0'
+
         Path.__init__(self, source, nlri, src_ver_num, pattrs, nexthop,
                       is_withdraw)
         if label_list is None:
@@ -464,6 +551,13 @@ class VrfPath(Path):
     @property
     def label_list(self):
         return self._label_list[:]
+
+    @property
+    def nlri_str(self):
+        # Returns `prefix` without the route distinguisher value, because
+        # a destination in VRF space can be identified without the route
+        # distinguisher.
+        return self._nlri.prefix
 
     @staticmethod
     def create_puid(route_dist, ip_prefix):
@@ -488,22 +582,34 @@ class VrfPath(Path):
         return clone
 
     def clone_to_vpn(self, route_dist, for_withdrawal=False):
-        ip, masklen = self._nlri.prefix.split('/')
-        vpn_nlri = self.VPN_NLRI_CLASS(length=int(masklen),
-                                       addr=ip,
-                                       labels=self.label_list,
-                                       route_dist=route_dist)
+        if self.ROUTE_FAMILY == RF_L2_EVPN:
+            # Because NLRI class is the same if the route family is EVPN,
+            # we re-use the NLRI instance.
+            vpn_nlri = self._nlri
+
+        elif self.ROUTE_FAMILY.safi in [IP_FLOWSPEC, VPN_FLOWSPEC]:
+            vpn_nlri = self.VPN_NLRI_CLASS(route_dist=route_dist,
+                                           rules=self.nlri.rules)
+
+        else:  # self.ROUTE_FAMILY in [RF_IPv4_UC, RF_IPv6_UC]
+            ip, masklen = self._nlri.prefix.split('/')
+            vpn_nlri = self.VPN_NLRI_CLASS(length=int(masklen),
+                                           addr=ip,
+                                           labels=self.label_list,
+                                           route_dist=route_dist)
 
         pathattrs = None
         if not for_withdrawal:
             pathattrs = self.pathattr_map
+
         vpnv_path = self.VPN_PATH_CLASS(
-            self.source, vpn_nlri,
-            self.source_version_num,
+            source=self.source,
+            nlri=vpn_nlri,
+            src_ver_num=self.source_version_num,
             pattrs=pathattrs,
             nexthop=self.nexthop,
-            is_withdraw=for_withdrawal
-        )
+            is_withdraw=for_withdrawal)
+
         return vpnv_path
 
     def __eq__(self, b_path):
@@ -540,7 +646,7 @@ class VrfNlriImportMap(ImportMap):
     def match(self, vrf_path):
         if vrf_path.route_family != self.VRF_PATH_CLASS.ROUTE_FAMILY:
             LOG.error(
-                "vrf_paths route_family doesn\'t match importmaps"
+                "vrf_paths route_family does not match importmaps"
                 "route_family. Applied to wrong table?")
             return False
 

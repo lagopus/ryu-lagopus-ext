@@ -22,21 +22,58 @@ except ImportError:
 
 import json
 import os
+import ssl
 import sys
 import warnings
-import unittest
 import logging
 import random
+import unittest
+
+from nose.tools import eq_, raises
 
 from ryu.base import app_manager  # To suppress cyclic import
 from ryu.controller import controller
 from ryu.controller import handler
+from ryu.lib import hub
 from ryu.ofproto import ofproto_v1_3_parser
 from ryu.ofproto import ofproto_v1_2_parser
 from ryu.ofproto import ofproto_v1_0_parser
+hub.patch()
 
 
 LOG = logging.getLogger('test_controller')
+
+
+class TestUtils(unittest.TestCase):
+    """
+    Test cases for utilities defined in controller module.
+    """
+
+    def test_split_addr_with_ipv4(self):
+        addr, port = controller._split_addr('127.0.0.1:6653')
+        eq_('127.0.0.1', addr)
+        eq_(6653, port)
+
+    def test_split_addr_with_ipv6(self):
+        addr, port = controller._split_addr('[::1]:6653')
+        eq_('::1', addr)
+        eq_(6653, port)
+
+    @raises(ValueError)
+    def test_split_addr_with_invalid_addr(self):
+        controller._split_addr('127.0.0.1')
+
+    @raises(ValueError)
+    def test_split_addr_with_invalid_ipv4_addr(self):
+        controller._split_addr('xxx.xxx.xxx.xxx:6653')
+
+    @raises(ValueError)
+    def test_split_addr_with_invalid_ipv6_addr(self):
+        controller._split_addr('[::xxxx]:6653')
+
+    @raises(ValueError)
+    def test_split_addr_with_non_bracketed_ipv6_addr(self):
+        controller._split_addr('::1:6653')
 
 
 class Test_Datapath(unittest.TestCase):
@@ -72,7 +109,7 @@ class Test_Datapath(unittest.TestCase):
                     self.assertTrue(issubclass(msg.category, UserWarning))
 
     def test_ports_accessibility_v13(self):
-        self._test_ports_accessibility(ofproto_v1_3_parser, 2)
+        self._test_ports_accessibility(ofproto_v1_3_parser, 0)
 
     def test_ports_accessibility_v12(self):
         self._test_ports_accessibility(ofproto_v1_2_parser, 0)
@@ -143,3 +180,52 @@ class Test_Datapath(unittest.TestCase):
             self.assertEqual(state, handler.MAIN_DISPATCHER)
             self.assertEqual(kwargs, {})
         self.assertEqual(expected_json, output_json)
+
+
+class TestOpenFlowController(unittest.TestCase):
+    """
+    Test cases for OpenFlowController
+    """
+    @mock.patch("ryu.controller.controller.CONF")
+    def _test_ssl(self, this_dir, port, conf_mock):
+        conf_mock.ofp_ssl_listen_port = port
+        conf_mock.ofp_listen_host = "127.0.0.1"
+        conf_mock.ca_certs = None
+        conf_mock.ctl_cert = os.path.join(this_dir, 'cert.crt')
+        conf_mock.ctl_privkey = os.path.join(this_dir, 'cert.key')
+        c = controller.OpenFlowController()
+        c()
+
+    def test_ssl(self):
+        """Tests SSL server functionality."""
+        # TODO: TLS version enforcement is necessary to avoid
+        # vulnerable versions. Currently, this only tests TLS
+        # connectivity.
+        this_dir = os.path.dirname(sys.modules[__name__].__file__)
+        saved_exception = None
+        try:
+            ssl_version = ssl.PROTOCOL_TLS
+        except AttributeError:
+            # For compatibility with older pythons.
+            ssl_version = ssl.PROTOCOL_TLSv1
+        for i in range(3):
+            try:
+                # Try a few times as this can fail with EADDRINUSE
+                port = random.randint(5000, 10000)
+                server = hub.spawn(self._test_ssl, this_dir, port)
+                hub.sleep(1)
+                client = hub.StreamClient(("127.0.0.1", port),
+                                          timeout=5,
+                                          ssl_version=ssl_version)
+                if client.connect() is not None:
+                    break
+            except Exception as e:
+                saved_exception = e
+                continue
+            finally:
+                try:
+                    hub.kill(server)
+                except Exception:
+                    pass
+        else:
+            self.fail("Failed to connect: " + str(saved_exception))

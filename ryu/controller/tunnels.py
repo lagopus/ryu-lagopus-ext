@@ -43,16 +43,62 @@ class EventTunnelKeyBase(event.EventBase):
 
 
 class EventTunnelKeyAdd(EventTunnelKeyBase):
+    """
+    An event class for tunnel key registration.
+
+    This event is generated when a tunnel key is registered or updated
+    by the REST API.
+    An instance has at least the following attributes.
+
+    =========== ===============================================================
+    Attribute   Description
+    =========== ===============================================================
+    network_id  Network ID
+    tunnel_key  Tunnel Key
+    =========== ===============================================================
+    """
+
     def __init__(self, network_id, tunnel_key):
         super(EventTunnelKeyAdd, self).__init__(network_id, tunnel_key)
 
 
 class EventTunnelKeyDel(EventTunnelKeyBase):
+    """
+    An event class for tunnel key registration.
+
+    This event is generated when a tunnel key is removed by the REST API.
+    An instance has at least the following attributes.
+
+    =========== ===============================================================
+    Attribute   Description
+    =========== ===============================================================
+    network_id  Network ID
+    tunnel_key  Tunnel Key
+    =========== ===============================================================
+    """
+
     def __init__(self, network_id, tunnel_key):
         super(EventTunnelKeyDel, self).__init__(network_id, tunnel_key)
 
 
 class EventTunnelPort(event.EventBase):
+    """
+    An event class for tunnel port registration.
+
+    This event is generated when a tunnel port is added or removed
+    by the REST API.
+    An instance has at least the following attributes.
+
+    =========== ===============================================================
+    Attribute   Description
+    =========== ===============================================================
+    dpid        OpenFlow Datapath ID
+    port_no     OpenFlow port number
+    remote_dpid OpenFlow port number of the tunnel peer
+    add_del     True for adding a tunnel.  False for removal.
+    =========== ===============================================================
+    """
+
     def __init__(self, dpid, port_no, remote_dpid, add_del):
         super(EventTunnelPort, self).__init__()
         self.dpid = dpid
@@ -63,6 +109,7 @@ class EventTunnelPort(event.EventBase):
 
 class TunnelKeys(dict):
     """network id(uuid) <-> tunnel key(32bit unsigned int)"""
+
     def __init__(self, f):
         super(TunnelKeys, self).__init__()
         self.send_event = f
@@ -106,6 +153,7 @@ class TunnelKeys(dict):
 
 class DPIDs(object):
     """dpid -> port_no -> remote_dpid"""
+
     def __init__(self, f):
         super(DPIDs, self).__init__()
         self.dpids = collections.defaultdict(dict)

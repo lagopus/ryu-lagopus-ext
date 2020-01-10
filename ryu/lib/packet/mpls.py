@@ -14,11 +14,11 @@
 # limitations under the License.
 
 import struct
-import socket
+
+import six
+
 from . import packet_base
-from . import packet_utils
-from . import ipv4
-from . import ether_types as ether
+from ryu.lib import type_desc
 
 
 class mpls(packet_base.PacketBase):
@@ -64,6 +64,7 @@ class mpls(packet_base.PacketBase):
             if len(buf) > offset and buf[offset] != 0x45:
                 return msg, mpls.get_packet_type(0), buf[msg._MIN_LEN:]
             else:
+                from . import ipv4
                 return msg, ipv4.ipv4, buf[msg._MIN_LEN:]
         else:
             return msg, mpls, buf[msg._MIN_LEN:]
@@ -71,3 +72,26 @@ class mpls(packet_base.PacketBase):
     def serialize(self, payload, prev):
         val = self.label << 12 | self.exp << 9 | self.bsb << 8 | self.ttl
         return struct.pack(mpls._PACK_STR, val)
+
+
+def label_from_bin(buf):
+    """
+    Converts binary representation label to integer.
+
+    :param buf: Binary representation of label.
+    :return: MPLS Label and BoS bit.
+    """
+
+    mpls_label = type_desc.Int3.to_user(six.binary_type(buf))
+    return mpls_label >> 4, mpls_label & 1
+
+
+def label_to_bin(mpls_label, is_bos=True):
+    """
+    Converts integer label to binary representation.
+
+    :param mpls_label: MPLS Label.
+    :param is_bos: BoS bit.
+    :return: Binary representation of label.
+    """
+    return type_desc.Int3.from_user(mpls_label << 4 | is_bos)

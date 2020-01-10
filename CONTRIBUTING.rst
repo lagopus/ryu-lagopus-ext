@@ -5,46 +5,71 @@ How to Get Your Change Into Ryu
 Submitting a change
 ===================
 
-Send patches to ryu-devel@lists.sourceforge.net. Please don't use 'pull
-request' on github. We expect you to send a patch in Linux kernel
-development style. If you are not familiar with it, please read the
-following document:
+Send patches to ryu-devel@lists.sourceforge.net. Please don't use "Pull
+Request" on GitHub. We expect you to send patches in "git-format-patch"
+style.
 
-https://www.kernel.org/doc/Documentation/SubmittingPatches
+.. code-block:: bash
 
-Please check your changes with pep8 and run unittests to make sure
-that they don't break the existing features. The following command
-does both for you:
+  # "N" means the number of commits to be included
+  $ git format-patch -s HEAD~N
 
-fujita@rose:~/git/ryu$ ./run_tests.sh
+  # To add cover (e.g., [PATCH 0/X]), specify "--cover-letter" option
+  $ git format-patch -s --cover-letter HEAD~N
 
-Of course, you are encouraged to add unittests when you add new
+  # You can send patches by "git send-email" command
+  $ git send-email --to="ryu-devel@lists.sourceforge.net" *.patch
+
+Please check your changes with autopep8, pycodestyle(pep8) and running
+unit tests to make sure that they don't break the existing features.
+The following command does all for you.
+
+.. code-block:: bash
+
+  # Install dependencies of tests
+  $ pip install -r tools/test-requires
+
+  # Execute autopep8
+  # Also, it is convenient to add settings of your editor or IDE for
+  # applying autopep8 automatically.
+  $ autopep8 --recursive --in-place ryu/
+
+  # Execute unit tests and pycodestyle(pep8)
+  $ ./run_tests.sh
+
+Of course, you are encouraged to add unit tests when you add new
 features (it's not a must though).
 
 Python version and libraries
 ============================
-* Python 2.6+
-  As RHEL 6 adopted python 2.6, features only for 2.7+ should be avoided.
+* Python 2.7, 3.4, 3.5:
 
-* standard library + widely used library
-  Basically widely used == OpenStack adopted
-  As usual there are exceptions. gevents. Or python binding library for other
+  Ryu supports multiple Python version.  CI tests on Travis-CI is running
+  on these versions.
+
+* standard library + widely used library:
+
+  Basically widely used == OpenStack adopted.
+  As usual there are exceptions.  Or python binding library for other
   component.
 
 Coding style guide
 ==================
-* pep8
-  As python is used, PEP8 is would be hopefully mandatory for
-  http://www.python.org/dev/peps/pep-0008/
+* pep8:
 
-* pylint
+  As python is used, PEP8 is would be hopefully mandatory for
+  https://www.python.org/dev/peps/pep-0008/
+
+* pylint:
+
   Although pylint is useful for finding bugs, but pylint score not very
   important for now because we're still at early development stage.
+  https://www.pylint.org/
 
-* Google python style guide is very helpful
-  http://google-styleguide.googlecode.com/svn/trunk/pyguide.html
+* Google python style guide is very helpful:
+  http://google.github.io/styleguide/pyguide.html
 
-  Guidelines derived from Guido's Recommendations
+* Guidelines derived from Guido's Recommendations:
 
   =============================   =================   ========
   Type                            Public              Internal
@@ -62,10 +87,11 @@ Coding style guide
   Local Variables                 lower_with_under
   =============================   =================   ========
 
-* OpenStack Nova style guide
+* OpenStack Nova style guide:
   https://github.com/openstack/nova/blob/master/HACKING.rst
 
-* JSON files
+* JSON files:
+
   Ryu source tree has JSON files under ryu/tests/unit/ofproto/json.
   They are used by unit tests.  To make patches easier to read,
   they are normalized using tools/normalize_json.py.  Please re-run

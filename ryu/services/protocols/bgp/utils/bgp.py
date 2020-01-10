@@ -17,14 +17,22 @@
  Utilities related to bgp data types and models.
 """
 import logging
-import socket
 
+import netaddr
+
+from ryu.lib import ip
 from ryu.lib.packet.bgp import (
     BGPUpdate,
     RF_IPv4_UC,
     RF_IPv6_UC,
     RF_IPv4_VPN,
     RF_IPv6_VPN,
+    RF_L2_EVPN,
+    RF_IPv4_FLOWSPEC,
+    RF_IPv6_FLOWSPEC,
+    RF_VPNv4_FLOWSPEC,
+    RF_VPNv6_FLOWSPEC,
+    RF_L2VPN_FLOWSPEC,
     RF_RTC_UC,
     RouteTargetMembershipNLRI,
     BGP_ATTR_TYPE_MULTI_EXIT_DISC,
@@ -35,21 +43,42 @@ from ryu.lib.packet.bgp import (
     BGPPathAttributeUnknown,
     BGP_ATTR_FLAG_OPTIONAL,
     BGP_ATTR_FLAG_TRANSITIVE,
+    BGPTwoOctetAsSpecificExtendedCommunity,
+    BGPIPv4AddressSpecificExtendedCommunity,
+    BGPFourOctetAsSpecificExtendedCommunity,
+    BGPFlowSpecTrafficRateCommunity,
+    BGPFlowSpecTrafficActionCommunity,
+    BGPFlowSpecRedirectCommunity,
+    BGPFlowSpecTrafficMarkingCommunity,
+    BGPFlowSpecVlanActionCommunity,
+    BGPFlowSpecTPIDActionCommunity,
 )
 from ryu.services.protocols.bgp.info_base.rtc import RtcPath
 from ryu.services.protocols.bgp.info_base.ipv4 import Ipv4Path
 from ryu.services.protocols.bgp.info_base.ipv6 import Ipv6Path
 from ryu.services.protocols.bgp.info_base.vpnv4 import Vpnv4Path
 from ryu.services.protocols.bgp.info_base.vpnv6 import Vpnv6Path
+from ryu.services.protocols.bgp.info_base.evpn import EvpnPath
+from ryu.services.protocols.bgp.info_base.ipv4fs import IPv4FlowSpecPath
+from ryu.services.protocols.bgp.info_base.ipv6fs import IPv6FlowSpecPath
+from ryu.services.protocols.bgp.info_base.vpnv4fs import VPNv4FlowSpecPath
+from ryu.services.protocols.bgp.info_base.vpnv6fs import VPNv6FlowSpecPath
+from ryu.services.protocols.bgp.info_base.l2vpnfs import L2VPNFlowSpecPath
 
 
 LOG = logging.getLogger('utils.bgp')
 
-# RouteFmaily to path sub-class mapping.
+# RouteFamily to path sub-class mapping.
 _ROUTE_FAMILY_TO_PATH_MAP = {RF_IPv4_UC: Ipv4Path,
                              RF_IPv6_UC: Ipv6Path,
                              RF_IPv4_VPN: Vpnv4Path,
                              RF_IPv6_VPN: Vpnv6Path,
+                             RF_L2_EVPN: EvpnPath,
+                             RF_IPv4_FLOWSPEC: IPv4FlowSpecPath,
+                             RF_IPv6_FLOWSPEC: IPv6FlowSpecPath,
+                             RF_VPNv4_FLOWSPEC: VPNv4FlowSpecPath,
+                             RF_VPNv6_FLOWSPEC: VPNv6FlowSpecPath,
+                             RF_L2VPN_FLOWSPEC: L2VPNFlowSpecPath,
                              RF_RTC_UC: RtcPath}
 
 
@@ -99,8 +128,7 @@ def from_inet_ptoi(bgp_id):
     """
     four_byte_id = None
     try:
-        packed_byte = socket.inet_pton(socket.AF_INET, bgp_id)
-        four_byte_id = int(packed_byte.encode('hex'), 16)
+        four_byte_id = ip.ipv4_to_int(bgp_id)
     except ValueError:
         LOG.debug('Invalid bgp id given for conversion to integer value %s',
                   bgp_id)
@@ -138,3 +166,132 @@ def create_end_of_rib_update():
 
 # Bgp update message instance that can used as End of RIB marker.
 UPDATE_EOR = create_end_of_rib_update()
+
+
+def create_rt_extended_community(value, subtype=2):
+    """
+    Creates an instance of the BGP Route Target Community (if "subtype=2")
+    or Route Origin Community ("subtype=3").
+
+    :param value: String of Route Target or Route Origin value.
+    :param subtype: Subtype of Extended Community.
+    :return: An instance of Route Target or Route Origin Community.
+    """
+    global_admin, local_admin = value.split(':')
+    local_admin = int(local_admin)
+    if global_admin.isdigit() and 0 <= int(global_admin) <= 0xffff:
+        ext_com = BGPTwoOctetAsSpecificExtendedCommunity(
+            subtype=subtype,
+            as_number=int(global_admin),
+            local_administrator=local_admin)
+    elif global_admin.isdigit() and 0xffff < int(global_admin) <= 0xffffffff:
+        ext_com = BGPFourOctetAsSpecificExtendedCommunity(
+            subtype=subtype,
+            as_number=int(global_admin),
+            local_administrator=local_admin)
+    elif ip.valid_ipv4(global_admin):
+        ext_com = BGPIPv4AddressSpecificExtendedCommunity(
+            subtype=subtype,
+            ipv4_address=global_admin,
+            local_administrator=local_admin)
+    else:
+        raise ValueError(
+            'Invalid Route Target or Route Origin value: %s' % value)
+
+    return ext_com
+
+
+def create_v4flowspec_actions(actions=None):
+    """
+    Create list of traffic filtering actions
+    for Ipv4 Flow Specification and VPNv4 Flow Specification.
+
+    `` actions`` specifies Traffic Filtering Actions of
+    Flow Specification as a dictionary type value.
+
+    Returns a list of extended community values.
+    """
+    from ryu.services.protocols.bgp.api.prefix import (
+        FLOWSPEC_ACTION_TRAFFIC_RATE,
+        FLOWSPEC_ACTION_TRAFFIC_ACTION,
+        FLOWSPEC_ACTION_REDIRECT,
+        FLOWSPEC_ACTION_TRAFFIC_MARKING,
+    )
+
+    # Supported action type for IPv4 and VPNv4.
+    action_types = {
+        FLOWSPEC_ACTION_TRAFFIC_RATE: BGPFlowSpecTrafficRateCommunity,
+        FLOWSPEC_ACTION_TRAFFIC_ACTION: BGPFlowSpecTrafficActionCommunity,
+        FLOWSPEC_ACTION_REDIRECT: BGPFlowSpecRedirectCommunity,
+        FLOWSPEC_ACTION_TRAFFIC_MARKING: BGPFlowSpecTrafficMarkingCommunity,
+    }
+
+    return _create_actions(actions, action_types)
+
+
+def create_v6flowspec_actions(actions=None):
+    """
+    Create list of traffic filtering actions
+    for Ipv6 Flow Specification and VPNv6 Flow Specification.
+
+    "FLOWSPEC_ACTION_REDIRECT_IPV6" is not implemented yet.
+    """
+    from ryu.services.protocols.bgp.api.prefix import (
+        FLOWSPEC_ACTION_TRAFFIC_RATE,
+        FLOWSPEC_ACTION_TRAFFIC_ACTION,
+        FLOWSPEC_ACTION_REDIRECT,
+        FLOWSPEC_ACTION_TRAFFIC_MARKING,
+    )
+
+    # Supported action type for IPv6 and VPNv6.
+    action_types = {
+        FLOWSPEC_ACTION_TRAFFIC_RATE: BGPFlowSpecTrafficRateCommunity,
+        FLOWSPEC_ACTION_TRAFFIC_ACTION: BGPFlowSpecTrafficActionCommunity,
+        FLOWSPEC_ACTION_REDIRECT: BGPFlowSpecRedirectCommunity,
+        FLOWSPEC_ACTION_TRAFFIC_MARKING: BGPFlowSpecTrafficMarkingCommunity,
+    }
+
+    return _create_actions(actions, action_types)
+
+
+def create_l2vpnflowspec_actions(actions=None):
+    """
+    Create list of traffic filtering actions for L2VPN Flow Specification.
+    """
+    from ryu.services.protocols.bgp.api.prefix import (
+        FLOWSPEC_ACTION_TRAFFIC_RATE,
+        FLOWSPEC_ACTION_TRAFFIC_ACTION,
+        FLOWSPEC_ACTION_REDIRECT,
+        FLOWSPEC_ACTION_TRAFFIC_MARKING,
+        FLOWSPEC_ACTION_VLAN,
+        FLOWSPEC_ACTION_TPID,
+    )
+
+    # Supported action type for L2VPN.
+    action_types = {
+        FLOWSPEC_ACTION_TRAFFIC_RATE: BGPFlowSpecTrafficRateCommunity,
+        FLOWSPEC_ACTION_TRAFFIC_ACTION: BGPFlowSpecTrafficActionCommunity,
+        FLOWSPEC_ACTION_REDIRECT: BGPFlowSpecRedirectCommunity,
+        FLOWSPEC_ACTION_TRAFFIC_MARKING: BGPFlowSpecTrafficMarkingCommunity,
+        FLOWSPEC_ACTION_VLAN: BGPFlowSpecVlanActionCommunity,
+        FLOWSPEC_ACTION_TPID: BGPFlowSpecTPIDActionCommunity,
+    }
+
+    return _create_actions(actions, action_types)
+
+
+def _create_actions(actions, action_types):
+    communities = []
+
+    if actions is None:
+        return communities
+
+    for name, action in actions.items():
+        cls_ = action_types.get(name, None)
+        if cls_:
+            communities.append(cls_(**action))
+        else:
+            raise ValueError(
+                'Unsupported flowspec action %s' % name)
+
+    return communities

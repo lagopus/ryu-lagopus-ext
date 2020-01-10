@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-#
 # Copyright (C) 2013 Nippon Telegraph and Telephone Corporation.
 # Copyright (C) 2013 YAMAMOTO Takashi <yamamoto at valinux co jp>
 #
@@ -16,8 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# msgpack-rpc
-# http://wiki.msgpack.org/display/MSGPACK/RPC+specification
+# Specification:
+# - msgpack
+#   https://github.com/msgpack/msgpack/blob/master/spec.md
+# - msgpack-rpc
+#   https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md
+
+from collections import deque
+import select
 
 import msgpack
 import six
@@ -33,15 +37,11 @@ class MessageEncoder(object):
     """msgpack-rpc encoder/decoder.
     intended to be transport-agnostic.
     """
+
     def __init__(self):
         super(MessageEncoder, self).__init__()
-        # note: on-wire msgpack has no notion of encoding.
-        # the msgpack-python library implicitly converts unicode to
-        # utf-8 encoded bytes by default.  we don't want to rely on
-        # the behaviour though because it seems to be going to change.
-        # cf. https://gist.github.com/methane/5022403
-        self._packer = msgpack.Packer(encoding=None)
-        self._unpacker = msgpack.Unpacker(encoding=None)
+        self._packer = msgpack.Packer(encoding='utf-8', use_bin_type=True)
+        self._unpacker = msgpack.Unpacker(encoding='utf-8')
         self._next_msgid = 0
 
     def _create_msgid(self):
@@ -50,20 +50,20 @@ class MessageEncoder(object):
         return this_id
 
     def create_request(self, method, params):
-        assert isinstance(method, six.binary_type)
+        assert isinstance(method, (str, six.binary_type))
         assert isinstance(params, list)
         msgid = self._create_msgid()
-        return (self._packer.pack([MessageType.REQUEST, msgid, method,
-                                  params]), msgid)
+        return (self._packer.pack(
+            [MessageType.REQUEST, msgid, method, params]), msgid)
 
     def create_response(self, msgid, error=None, result=None):
         assert isinstance(msgid, int)
-        assert 0 <= msgid and msgid <= 0xffffffff
+        assert 0 <= msgid <= 0xffffffff
         assert error is None or result is None
         return self._packer.pack([MessageType.RESPONSE, msgid, error, result])
 
     def create_notification(self, method, params):
-        assert isinstance(method, six.binary_type)
+        assert isinstance(method, (str, six.binary_type))
         assert isinstance(params, list)
         return self._packer.pack([MessageType.NOTIFY, method, params])
 
@@ -76,25 +76,23 @@ class MessageEncoder(object):
         for m in self._unpacker:
             self._dispatch_message(m, disp_table)
 
-    def _dispatch_message(self, m, disp_table):
+    @staticmethod
+    def _dispatch_message(m, disp_table):
         # XXX validation
-        type = m[0]
+        t = m[0]
         try:
-            f = disp_table[type]
+            f = disp_table[t]
         except KeyError:
             # ignore messages with unknown type
             return
         f(m[1:])
 
 
-from collections import deque
-import select
-
-
 class EndPoint(object):
     """An endpoint
     *sock* is a socket-like.  it can be either blocking or non-blocking.
     """
+
     def __init__(self, sock, encoder=None, disp_table=None):
         if encoder is None:
             encoder = MessageEncoder()
@@ -231,7 +229,7 @@ class EndPoint(object):
         except KeyError:
             return None
         error, result = m
-        return (result, error)
+        return result, error
 
     def get_notification(self):
         return self._get_message(self._notifications)
@@ -240,7 +238,9 @@ class EndPoint(object):
 class RPCError(Exception):
     """an error from server
     """
+
     def __init__(self, error):
+        super(RPCError, self).__init__()
         self._error = error
 
     def get_value(self):
@@ -254,6 +254,7 @@ class Client(object):
     """a convenient class for a pure rpc client
     *sock* is a socket-like.  it should be blocking.
     """
+
     def __init__(self, sock, encoder=None, notification_callback=None):
         self._endpoint = EndPoint(sock, encoder)
         if notification_callback is None:
